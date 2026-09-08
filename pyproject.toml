@@ -1,0 +1,18 @@
+[project]
+name = "aws-cost-waste-detector"
+version = "0.1.0"
+description = "FinOps enrichment and remediation platform for AWS cost optimization recommendations"
+requires-python = ">=3.11"
+dependencies = [
+  "boto3>=1.43,<2",
+  "botocore[crt]>=1.43,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<9",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

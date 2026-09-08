@@ -1,0 +1,21 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# VS Code
+.vscode/
+
+# Environment / secrets
+.env
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+
+# OS files
+.DS_Store
+Thumbs.db
