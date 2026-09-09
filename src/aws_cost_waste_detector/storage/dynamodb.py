@@ -4,6 +4,7 @@ from typing import Any
 from botocore.exceptions import ClientError
 
 from aws_cost_waste_detector.models import Finding
+from aws_cost_waste_detector.lifecycle import determine_status
 
 
 def finding_key(finding: Finding) -> dict[str, str]:
@@ -69,19 +70,86 @@ def put_new_finding(table: Any, finding: Finding) -> None:
     )
 
 
-def update_existing_finding(table: Any, finding: Finding) -> None:
+def update_existing_finding(
+    table: Any,
+    finding: Finding,
+    existing_item: dict[str, Any],
+    grace_period_days: int = 7,
+) -> None:
     """
-    -> Update a finding that has already been observed.
+    Refresh an existing finding in DynamoDB.
 
-    -> Only the latest observation and mutable finding data
-    -> are refreshed.
+    Active findings preserve their original first_seen timestamp so
+    the application can determine how long the waste condition has
+    continuously existed.
+
+    If a previously RESOLVED finding appears again, it is treated as
+    a new occurrence. Its first_seen timestamp is reset and the old
+    resolved_at value is cleared.
     """
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc)
+
+    # A resolved finding that reappears starts a new observation window.
+    if existing_item.get("status") == "RESOLVED":
+        first_seen = now
+
+        status = determine_status(
+            first_seen=first_seen,
+            currently_detected=True,
+            grace_period_days=grace_period_days,
+            now=now,
+        )
+
+        table.update_item(
+            Key=finding_key(finding),
+            UpdateExpression=(
+                "SET first_seen = :first_seen, "
+                "last_seen = :last_seen, "
+                "#status = :status, "
+                "resolved_at = :resolved_at, "
+                "title = :title, "
+                "description = :description, "
+                "severity = :severity, "
+                "recommendation = :recommendation, "
+                "estimated_monthly_savings = :savings, "
+                "metadata = :metadata"
+            ),
+            ExpressionAttributeNames={
+                "#status": "status",
+            },
+            ExpressionAttributeValues={
+                ":first_seen": first_seen.isoformat(),
+                ":last_seen": now.isoformat(),
+                ":status": status,
+                ":resolved_at": None,
+                ":title": finding.title,
+                ":description": finding.description,
+                ":severity": finding.severity,
+                ":recommendation": finding.recommendation,
+                ":savings": finding.estimated_monthly_savings,
+                ":metadata": finding.metadata,
+            },
+        )
+
+        return
+
+    # An already-active finding keeps its original first_seen timestamp.
+    first_seen = datetime.fromisoformat(
+        existing_item["first_seen"]
+    )
+
+    status = determine_status(
+        first_seen=first_seen,
+        currently_detected=True,
+        grace_period_days=grace_period_days,
+        now=now,
+    )
 
     table.update_item(
         Key=finding_key(finding),
         UpdateExpression=(
             "SET last_seen = :last_seen, "
+            "#status = :status, "
             "title = :title, "
             "description = :description, "
             "severity = :severity, "
@@ -89,8 +157,12 @@ def update_existing_finding(table: Any, finding: Finding) -> None:
             "estimated_monthly_savings = :savings, "
             "metadata = :metadata"
         ),
+        ExpressionAttributeNames={
+            "#status": "status",
+        },
         ExpressionAttributeValues={
-            ":last_seen": now,
+            ":last_seen": now.isoformat(),
+            ":status": status,
             ":title": finding.title,
             ":description": finding.description,
             ":severity": finding.severity,
@@ -103,23 +175,128 @@ def update_existing_finding(table: Any, finding: Finding) -> None:
 
 def save_finding(table: Any, finding: Finding) -> str:
     """
-    -> Persist a finding while preserving its observation history.
+    Persist a finding while preserving its observation history.
 
-    -> A new finding is inserted with first_seen and last_seen timestamps.
-    -> If finding exists, only its mutable fields and last_seen timestamp are updated.
+    A new finding is inserted with first_seen and last_seen timestamps.
 
-    -> Returns the status of the finding after the operation.
+    If the finding already exists, retrieve its existing history,
+    recalculate its lifecycle status, and update its mutable fields.
+
+    Returns:
+        CREATED when the finding is first inserted.
+        UPDATED when the finding already exists.
     """
     try:
         put_new_finding(table, finding)
         return "CREATED"
-    
+
     except ClientError as error:
         error_code = error.response.get("Error", {}).get("Code")
 
-        # Conditional insert fails when PK/SK already exists
+        # Only treat a conditional failure as an existing finding.
+        # Other AWS errors should still propagate.
         if error_code != "ConditionalCheckFailedException":
             raise
 
-        update_existing_finding(table, finding)
+        # Retrieve the existing item so first_seen can be used
+        # to determine whether the finding is OBSERVED or OPEN.
+        response = table.get_item(
+            Key=finding_key(finding),
+            ConsistentRead=True,
+        )
+
+        existing_item = response.get("Item")
+
+        if existing_item is None:
+            raise RuntimeError(
+                "Finding already existed but could not be retrieved from DynamoDB."
+            )
+
+        update_existing_finding(
+            table,
+            finding,
+            existing_item,
+        )
+
         return "UPDATED"
+
+def resolve_finding(
+    table: Any,
+    existing_item: dict[str, Any],
+) -> None:
+    """
+    Mark a previously detected finding as RESOLVED.
+
+    A finding is resolved when it existed in DynamoDB during a previous
+    scan but is no longer returned by the current scanner.
+    """
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    table.update_item(
+        Key={
+            "PK": existing_item["PK"],
+            "SK": existing_item["SK"],
+        },
+        UpdateExpression=(
+            "SET #status = :status, "
+            "resolved_at = :resolved_at"
+        ),
+        ExpressionAttributeNames={
+            "#status": "status",
+        },
+        ExpressionAttributeValues={
+            ":status": "RESOLVED",
+            ":resolved_at": now,
+        },
+    )
+
+def list_active_findings(
+    table: Any,
+    *,
+    account_id: str,
+    region: str,
+) -> list[dict[str, Any]]:
+    """
+    Retrieve active findings for one AWS account and region.
+
+    Only OBSERVED and OPEN findings are returned. RESOLVED findings
+    are historical records and should not participate in reconciliation.
+
+    DynamoDB Scan is acceptable for the current small-scale MVP.
+    A secondary index can replace this later as the dataset grows.
+    """
+    items = []
+
+    scan_kwargs = {
+    "FilterExpression": (
+        "account_id = :account_id AND "
+        "#region = :region AND "
+        "#status IN (:observed, :open)"
+    ),
+    "ExpressionAttributeNames": {
+        "#region": "region",
+        "#status": "status",
+    },
+    "ExpressionAttributeValues": {
+        ":account_id": account_id,
+        ":region": region,
+        ":observed": "OBSERVED",
+        ":open": "OPEN",
+    },
+}
+
+    while True:
+        response = table.scan(**scan_kwargs)
+
+        items.extend(response.get("Items", []))
+
+        last_evaluated_key = response.get("LastEvaluatedKey")
+
+        if not last_evaluated_key:
+            break
+
+        # Continue scanning from where the previous page stopped.
+        scan_kwargs["ExclusiveStartKey"] = last_evaluated_key
+
+    return items
