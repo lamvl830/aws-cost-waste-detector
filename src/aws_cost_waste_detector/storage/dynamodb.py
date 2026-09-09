@@ -3,33 +3,48 @@ from typing import Any
 
 from botocore.exceptions import ClientError
 
-from aws_cost_waste_detector.models import Finding
 from aws_cost_waste_detector.lifecycle import determine_status
+from aws_cost_waste_detector.models import Finding
+from aws_cost_waste_detector.prioritization import (
+    calculate_finding_priority,
+)
 
 
 def finding_key(finding: Finding) -> dict[str, str]:
     """
-    -> Build DynamoDB primary key for finding.
+    Build the DynamoDB primary key for a finding.
 
-    -> PK identifies AWS resource.
-    -> SK identifies the specific waste rule affecting the resource.
+    PK identifies the AWS resource.
+    SK identifies the specific waste rule affecting the resource.
 
-    -> Allows for one AWS resource to have multiple independent findings.
+    This allows one AWS resource to have multiple independent findings.
     """
     return {
-        "PK": f"RESOURCE#{finding.resource_arn}", 
+        "PK": f"RESOURCE#{finding.resource_arn}",
         "SK": f"RULE#{finding.rule_id}",
     }
 
 
 def finding_to_item(finding: Finding) -> dict[str, Any]:
     """
-    -> Convert a Finding object into DynamoDB structure
+    Convert a Finding object into a DynamoDB item.
 
-    -> New findings begin in OBSERVED state.
-    -> Logic determines when observed finding should be OPEN/RESOLVED
+    New findings begin in the OBSERVED state with an age of zero.
+    Their priority is calculated immediately using estimated savings,
+    age, and severity.
     """
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc)
+
+    priority = calculate_finding_priority(
+        {
+            "first_seen": now.isoformat(),
+            "estimated_monthly_savings": (
+                finding.estimated_monthly_savings
+            ),
+            "severity": finding.severity,
+        },
+        now=now,
+    )
 
     return {
         **finding_key(finding),
@@ -43,29 +58,38 @@ def finding_to_item(finding: Finding) -> dict[str, Any]:
         "description": finding.description,
         "severity": finding.severity,
         "recommendation": finding.recommendation,
-        "estimated_monthly_savings": finding.estimated_monthly_savings,
+        "estimated_monthly_savings": (
+            finding.estimated_monthly_savings
+        ),
         "metadata": finding.metadata,
         "status": "OBSERVED",
-        "first_seen": now,
-        "last_seen": now,
+        "first_seen": now.isoformat(),
+        "last_seen": now.isoformat(),
         "resolved_at": None,
+        "age_days": priority["age_days"],
+        "priority_score": priority["priority_score"],
+        "priority_label": priority["priority_label"],
     }
 
 
-def put_new_finding(table: Any, finding: Finding) -> None:
+def put_new_finding(
+    table: Any,
+    finding: Finding,
+) -> None:
     """
-    -> Store a newly observed finding in DynamoDB.
+    Store a newly observed finding in DynamoDB.
 
-    -> The condition prevents an existing finding from being overwritten.
-    -> Existing findings will later use separate update logic so that
-    -> first_seen is preserved.
+    The condition prevents an existing finding from being overwritten.
+    Existing findings use separate update logic so first_seen and
+    lifecycle history can be preserved.
     """
     item = finding_to_item(finding)
 
     table.put_item(
         Item=item,
         ConditionExpression=(
-            "attribute_not_exists(PK) AND attribute_not_exists(SK)"
+            "attribute_not_exists(PK) AND "
+            "attribute_not_exists(SK)"
         ),
     )
 
@@ -84,8 +108,8 @@ def update_existing_finding(
     continuously existed.
 
     If a previously RESOLVED finding appears again, it is treated as
-    a new occurrence. Its first_seen timestamp is reset and the old
-    resolved_at value is cleared.
+    a new occurrence. Its first_seen timestamp is reset, its old
+    resolved_at timestamp is cleared, and its priority starts over.
     """
     now = datetime.now(timezone.utc)
 
@@ -97,6 +121,17 @@ def update_existing_finding(
             first_seen=first_seen,
             currently_detected=True,
             grace_period_days=grace_period_days,
+            now=now,
+        )
+
+        priority = calculate_finding_priority(
+            {
+                "first_seen": first_seen.isoformat(),
+                "estimated_monthly_savings": (
+                    finding.estimated_monthly_savings
+                ),
+                "severity": finding.severity,
+            },
             now=now,
         )
 
@@ -112,7 +147,10 @@ def update_existing_finding(
                 "severity = :severity, "
                 "recommendation = :recommendation, "
                 "estimated_monthly_savings = :savings, "
-                "metadata = :metadata"
+                "metadata = :metadata, "
+                "age_days = :age_days, "
+                "priority_score = :priority_score, "
+                "priority_label = :priority_label"
             ),
             ExpressionAttributeNames={
                 "#status": "status",
@@ -128,6 +166,9 @@ def update_existing_finding(
                 ":recommendation": finding.recommendation,
                 ":savings": finding.estimated_monthly_savings,
                 ":metadata": finding.metadata,
+                ":age_days": priority["age_days"],
+                ":priority_score": priority["priority_score"],
+                ":priority_label": priority["priority_label"],
             },
         )
 
@@ -145,6 +186,17 @@ def update_existing_finding(
         now=now,
     )
 
+    priority = calculate_finding_priority(
+        {
+            "first_seen": first_seen.isoformat(),
+            "estimated_monthly_savings": (
+                finding.estimated_monthly_savings
+            ),
+            "severity": finding.severity,
+        },
+        now=now,
+    )
+
     table.update_item(
         Key=finding_key(finding),
         UpdateExpression=(
@@ -155,7 +207,10 @@ def update_existing_finding(
             "severity = :severity, "
             "recommendation = :recommendation, "
             "estimated_monthly_savings = :savings, "
-            "metadata = :metadata"
+            "metadata = :metadata, "
+            "age_days = :age_days, "
+            "priority_score = :priority_score, "
+            "priority_label = :priority_label"
         ),
         ExpressionAttributeNames={
             "#status": "status",
@@ -169,29 +224,43 @@ def update_existing_finding(
             ":recommendation": finding.recommendation,
             ":savings": finding.estimated_monthly_savings,
             ":metadata": finding.metadata,
+            ":age_days": priority["age_days"],
+            ":priority_score": priority["priority_score"],
+            ":priority_label": priority["priority_label"],
         },
     )
 
 
-def save_finding(table: Any, finding: Finding) -> str:
+def save_finding(
+    table: Any,
+    finding: Finding,
+) -> str:
     """
     Persist a finding while preserving its observation history.
 
     A new finding is inserted with first_seen and last_seen timestamps.
 
     If the finding already exists, retrieve its existing history,
-    recalculate its lifecycle status, and update its mutable fields.
+    recalculate its lifecycle status and priority, and update its
+    mutable fields.
 
     Returns:
         CREATED when the finding is first inserted.
         UPDATED when the finding already exists.
     """
     try:
-        put_new_finding(table, finding)
+        put_new_finding(
+            table,
+            finding,
+        )
+
         return "CREATED"
 
     except ClientError as error:
-        error_code = error.response.get("Error", {}).get("Code")
+        error_code = error.response.get(
+            "Error",
+            {},
+        ).get("Code")
 
         # Only treat a conditional failure as an existing finding.
         # Other AWS errors should still propagate.
@@ -199,7 +268,7 @@ def save_finding(table: Any, finding: Finding) -> str:
             raise
 
         # Retrieve the existing item so first_seen can be used
-        # to determine whether the finding is OBSERVED or OPEN.
+        # to determine lifecycle state and finding age.
         response = table.get_item(
             Key=finding_key(finding),
             ConsistentRead=True,
@@ -209,7 +278,8 @@ def save_finding(table: Any, finding: Finding) -> str:
 
         if existing_item is None:
             raise RuntimeError(
-                "Finding already existed but could not be retrieved from DynamoDB."
+                "Finding already existed but could not be "
+                "retrieved from DynamoDB."
             )
 
         update_existing_finding(
@@ -220,6 +290,7 @@ def save_finding(table: Any, finding: Finding) -> str:
 
         return "UPDATED"
 
+
 def resolve_finding(
     table: Any,
     existing_item: dict[str, Any],
@@ -229,9 +300,13 @@ def resolve_finding(
 
     A finding is resolved when it existed in DynamoDB during a previous
     scan but is no longer returned by the current scanner.
-    """
 
-    now = datetime.now(timezone.utc).isoformat()
+    first_seen and last_seen are preserved so the historical observation
+    window remains available.
+    """
+    now = datetime.now(
+        timezone.utc
+    ).isoformat()
 
     table.update_item(
         Key={
@@ -251,6 +326,7 @@ def resolve_finding(
         },
     )
 
+
 def list_active_findings(
     table: Any,
     *,
@@ -269,34 +345,45 @@ def list_active_findings(
     items = []
 
     scan_kwargs = {
-    "FilterExpression": (
-        "account_id = :account_id AND "
-        "#region = :region AND "
-        "#status IN (:observed, :open)"
-    ),
-    "ExpressionAttributeNames": {
-        "#region": "region",
-        "#status": "status",
-    },
-    "ExpressionAttributeValues": {
-        ":account_id": account_id,
-        ":region": region,
-        ":observed": "OBSERVED",
-        ":open": "OPEN",
-    },
-}
+        "FilterExpression": (
+            "account_id = :account_id AND "
+            "#region = :region AND "
+            "#status IN (:observed, :open)"
+        ),
+        "ExpressionAttributeNames": {
+            "#region": "region",
+            "#status": "status",
+        },
+        "ExpressionAttributeValues": {
+            ":account_id": account_id,
+            ":region": region,
+            ":observed": "OBSERVED",
+            ":open": "OPEN",
+        },
+    }
 
     while True:
-        response = table.scan(**scan_kwargs)
+        response = table.scan(
+            **scan_kwargs
+        )
 
-        items.extend(response.get("Items", []))
+        items.extend(
+            response.get(
+                "Items",
+                [],
+            )
+        )
 
-        last_evaluated_key = response.get("LastEvaluatedKey")
+        last_evaluated_key = response.get(
+            "LastEvaluatedKey"
+        )
 
         if not last_evaluated_key:
             break
 
         # Continue scanning from where the previous page stopped.
-        scan_kwargs["ExclusiveStartKey"] = last_evaluated_key
+        scan_kwargs["ExclusiveStartKey"] = (
+            last_evaluated_key
+        )
 
     return items

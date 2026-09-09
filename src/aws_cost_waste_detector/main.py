@@ -13,6 +13,13 @@ from aws_cost_waste_detector.storage.dynamodb import (
     resolve_finding,
     save_finding,
 )
+from aws_cost_waste_detector.prioritization import (
+    calculate_current_finding_priority,
+)
+from aws_cost_waste_detector.reporting import (
+    build_cost_summary,
+    format_cost_summary,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -173,6 +180,40 @@ def main() -> None:
             }
         )
 
+    ranked_findings = []
+
+    for finding in findings:
+        stored_item = next(
+            (
+                item
+                for item in stored_active_findings
+                if item.get("resource_id") == finding.resource_id
+                and item.get("rule_id") == finding.rule_id
+            ),
+            None,
+        )
+
+        priority = calculate_current_finding_priority(
+            finding,
+            existing_item=stored_item,
+        )
+
+        ranked_findings.append(
+            {
+                **finding.to_dict(),
+                **priority,
+            }
+        )
+
+    ranked_findings.sort(
+        key=lambda item: item["priority_score"],
+        reverse=True,
+    )
+
+    summary = build_cost_summary(
+    ranked_findings,
+    )
+        
     # Compare previous active findings with the current scan.
     # Anything missing from a rule that was evaluated is resolved.
     missing_findings = find_missing_items(
@@ -199,14 +240,11 @@ def main() -> None:
 
     # Print all findings returned by the current scan.
     print(
-        json.dumps(
-            [
-                finding.to_dict()
-                for finding in findings
-            ],
-            indent=2,
+        format_cost_summary(
+            summary
         )
     )
+    
 
     # Print persistence results for active findings.
     print(

@@ -456,3 +456,57 @@ def test_list_active_findings_handles_pagination():
         "PK": "RESOURCE#one",
         "SK": "RULE#one",
     }
+
+def test_new_finding_stores_priority_fields():
+    finding = make_finding()
+
+    item = finding_to_item(
+        finding
+    )
+
+    # A brand-new LOW severity finding with no known savings
+    # starts at age zero and therefore has a LOW priority.
+    assert item["age_days"] == 0
+    assert item["priority_score"] == 0
+    assert item["priority_label"] == "LOW"
+
+
+def test_existing_finding_update_stores_priority_fields():
+    finding = make_finding()
+    table = FakeTable()
+
+    existing_item = {
+        "status": "OBSERVED",
+        "first_seen": datetime.now(
+            timezone.utc
+        ).isoformat(),
+    }
+
+    update_existing_finding(
+        table,
+        finding,
+        existing_item,
+    )
+
+    assert len(table.update_item_calls) == 1
+
+    call = table.update_item_calls[0]
+    values = call["ExpressionAttributeValues"]
+
+    assert ":age_days" in values
+    assert ":priority_score" in values
+    assert ":priority_label" in values
+
+    assert values[":age_days"] == 0
+    assert values[":priority_score"] == 0
+    assert values[":priority_label"] == "LOW"
+
+    assert "age_days = :age_days" in call["UpdateExpression"]
+    assert (
+        "priority_score = :priority_score"
+        in call["UpdateExpression"]
+    )
+    assert (
+        "priority_label = :priority_label"
+        in call["UpdateExpression"]
+    )
