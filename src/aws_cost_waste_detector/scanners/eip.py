@@ -2,6 +2,8 @@ from collections.abc import Iterable
 from typing import Any
 
 from aws_cost_waste_detector.models import Finding
+from aws_cost_waste_detector.cost.eip import estimate_eip_monthly_cost
+from aws_cost_waste_detector.pricing.eip import EipPriceProvider
 
 IGNORE_TAG = "WasteDetectorIgnore"
 
@@ -19,6 +21,7 @@ def scan_unused_eips(
     account_id: str,
     region: str,
     partition: str = "aws",
+    price_provider: EipPriceProvider | None = None,
 ) -> Iterable[Finding]:
     response = ec2_client.describe_addresses()
 
@@ -38,6 +41,17 @@ def scan_unused_eips(
         # AllocationId exists for VPC Elastic IPs.
         resource_id = allocation_id or public_ip
 
+        estimated_monthly_savings = None
+
+        if price_provider is not None:
+            hourly_price = price_provider.get_hourly_price(
+                region=region,
+            )
+
+            estimated_monthly_savings = estimate_eip_monthly_cost(
+                hourly_price=hourly_price,
+            )
+
         yield Finding(
             rule_id="EIP_UNUSED",
             account_id=account_id,
@@ -56,6 +70,7 @@ def scan_unused_eips(
                 "Verify the Elastic IP is no longer required and release it "
                 "if it is unused."
             ),
+            estimated_monthly_savings=estimated_monthly_savings,
             metadata={
                 "public_ip": public_ip,
                 "allocation_id": allocation_id,

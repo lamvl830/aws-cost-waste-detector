@@ -9,6 +9,21 @@ class FakeEC2Client:
         return {"Addresses": self.addresses}
 
 
+class FakeEipPriceProvider:
+    """
+    Return a predictable public IPv4 price without calling AWS.
+    """
+
+    def get_hourly_price(
+        self,
+        *,
+        region: str,
+    ) -> float:
+        assert region == "us-east-1"
+
+        return 0.005
+
+
 def test_unused_eip_becomes_finding():
     client = FakeEC2Client(
         [
@@ -82,3 +97,34 @@ def test_ignore_tag_suppresses_eip():
     )
 
     assert findings == []
+
+
+def test_estimates_monthly_savings_when_price_provider_supplied():
+    client = FakeEC2Client(
+        [
+            {
+                "PublicIp": "203.0.113.10",
+                "AllocationId": "eipalloc-123",
+                "Domain": "vpc",
+                "Tags": [],
+            }
+        ]
+    )
+
+    price_provider = FakeEipPriceProvider()
+
+    findings = list(
+        scan_unused_eips(
+            client,
+            account_id="123456789012",
+            region="us-east-1",
+            partition="aws",
+            price_provider=price_provider,
+        )
+    )
+
+    assert len(findings) == 1
+
+    finding = findings[0]
+
+    assert finding.estimated_monthly_savings == 3.65
