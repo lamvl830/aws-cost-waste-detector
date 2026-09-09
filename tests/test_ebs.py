@@ -20,6 +20,23 @@ class FakeEC2Client:
         return self.paginator
 
 
+class FakeEbsPriceProvider:
+    """
+    Return a predictable EBS price without calling AWS Pricing.
+    """
+
+    def get_price_per_gib_month(
+        self,
+        *,
+        region: str,
+        volume_type: str,
+    ) -> float:
+        assert region == "us-east-1"
+        assert volume_type == "gp3"
+
+        return 0.08
+
+
 def test_returns_unattached_volume_finding():
     client = FakeEC2Client(
         [
@@ -43,8 +60,9 @@ def test_returns_unattached_volume_finding():
             client,
             account_id="123456789012",
             region="us-east-1",
-        )
+            partition="aws",
     )
+)
 
     assert len(findings) == 1
     finding = findings[0]
@@ -79,7 +97,45 @@ def test_ignores_opted_out_volume():
             client,
             account_id="123456789012",
             region="us-east-1",
+            partition="aws",
+    )
+)
+
+    assert findings == []
+
+
+def test_estimates_monthly_savings_when_price_provider_supplied():
+    client = FakeEC2Client(
+        [
+            {
+                "Volumes": [
+                    {
+                        "VolumeId": "vol-priced",
+                        "Size": 100,
+                        "VolumeType": "gp3",
+                        "AvailabilityZone": "us-east-1a",
+                        "Encrypted": True,
+                        "Tags": [],
+                    }
+                ]
+            }
+        ]
+    )
+
+    price_provider = FakeEbsPriceProvider()
+
+    findings = list(
+        scan_unattached_ebs(
+            client,
+            account_id="123456789012",
+            region="us-east-1",
+            partition="aws",
+            price_provider=price_provider,
         )
     )
 
-    assert findings == []
+    assert len(findings) == 1
+
+    finding = findings[0]
+
+    assert finding.estimated_monthly_savings == 8.00

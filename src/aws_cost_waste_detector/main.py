@@ -3,6 +3,7 @@ import json
 
 import boto3
 
+from aws_cost_waste_detector.pricing.ebs import AwsEbsPriceProvider
 from aws_cost_waste_detector.reconciliation import find_missing_items
 from aws_cost_waste_detector.scanners.ebs import scan_unattached_ebs
 from aws_cost_waste_detector.scanners.eip import scan_unused_eips
@@ -74,6 +75,16 @@ def main() -> None:
         region_name=region,
     )
 
+    # AWS Pricing uses a dedicated endpoint.
+    pricing_client = session.client(
+        "pricing",
+        region_name="us-east-1",
+    )
+
+    ebs_price_provider = AwsEbsPriceProvider(
+        pricing_client,
+    )
+
     dynamodb_resource = session.resource(
         "dynamodb",
         region_name=region,
@@ -97,13 +108,14 @@ def main() -> None:
     reconciled_rule_ids = set()
 
     ebs_findings = list(
-        scan_unattached_ebs(
-            ec2,
-            account_id=account_id,
-            region=region,
-            partition=partition,
-        )
+    scan_unattached_ebs(
+        ec2,
+        account_id=account_id,
+        region=region,
+        partition=partition,
+        price_provider=ebs_price_provider,
     )
+)
 
     findings.extend(ebs_findings)
     reconciled_rule_ids.add("EBS_CURRENTLY_UNATTACHED")
