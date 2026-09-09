@@ -19,3 +19,6 @@ __pycache__/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Lambda build artifacts
+infrastructure/lambda_package.zip
