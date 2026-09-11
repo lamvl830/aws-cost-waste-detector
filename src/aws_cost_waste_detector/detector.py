@@ -14,9 +14,15 @@ from aws_cost_waste_detector.reporting import (
 from aws_cost_waste_detector.scanners.ebs import scan_unattached_ebs
 from aws_cost_waste_detector.scanners.eip import scan_unused_eips
 from aws_cost_waste_detector.storage.dynamodb import (
+    finding_key,
     list_active_findings,
+    mark_finding_notified,
     resolve_finding,
     save_finding,
+)
+from aws_cost_waste_detector.notifier import SnsNotifier
+from aws_cost_waste_detector.notifications import (
+    should_send_finding_notification,
 )
 
 
@@ -25,6 +31,7 @@ def run_detector(
     *,
     region: str,
     table_name: str = "WasteFindings",
+    notifier: SnsNotifier | None = None,
 ) -> dict[str, Any]:
     """
     Run the complete AWS cost-waste detection workflow.
@@ -128,6 +135,7 @@ def run_detector(
             }
         )
 
+    notification_results = []
     ranked_findings = []
 
     for finding in findings:
@@ -145,6 +153,43 @@ def run_detector(
             finding,
             existing_item=stored_item,
         )
+
+        notification_item = {
+            **finding.to_dict(),
+            **finding_key(finding),
+            **priority,
+            "last_notified_at": (
+                stored_item.get("last_notified_at")
+                if stored_item is not None
+                else None
+            ),
+        }
+
+        if (
+            notifier is not None
+            and should_send_finding_notification(
+                notification_item
+            )
+        ):
+            # Only mark finding as notified after SNS publishes
+            # A failed publish remains eligible for retry
+            message_id = notifier.send_finding(
+                notification_item
+            )
+
+            notified_at = mark_finding_notified(
+                table,
+                notification_item,
+            )
+
+            notification_results.append(
+                {
+                    "resource_id": finding.resource_id,
+                    "rule_id": finding.rule_id,
+                    "message_id": message_id,
+                    "notified_at": notified_at,
+                }
+            )
 
         ranked_findings.append(
             {
@@ -191,4 +236,5 @@ def run_detector(
         "summary": summary,
         "persistence_results": persistence_results,
         "resolution_results": resolved_results,
+        "notification_results": notification_results,
     }

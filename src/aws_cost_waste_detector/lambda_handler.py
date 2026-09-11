@@ -6,6 +6,7 @@ import boto3
 
 from aws_cost_waste_detector.detector import run_detector
 from aws_cost_waste_detector.reporting import format_cost_summary
+from aws_cost_waste_detector.notifier import SnsNotifier
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -37,10 +38,28 @@ def lambda_handler(
         region_name=region,
     )
 
+    topic_arn = os.environ.get(
+    "COST_WASTE_ALERTS_TOPIC_ARN"
+    )
+
+    notifier = None
+
+    if topic_arn:
+        sns_client = session.client(
+            "sns",
+            region_name=region,
+        )
+
+        notifier = SnsNotifier(
+            sns_client,
+            topic_arn=topic_arn,
+        )
+
     result = run_detector(
         session,
         region=region,
         table_name=table_name,
+        notifier=notifier,
     )
 
     # CloudWatch Logs will capture this readable summary.
@@ -69,6 +88,9 @@ def lambda_handler(
         ),
         "resolved_findings": len(
             result["resolution_results"]
+        ),
+        "notifications_sent": len(
+        result["notification_results"]
         ),
         "summary": result["summary"],
     }
