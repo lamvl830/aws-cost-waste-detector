@@ -1,0 +1,46 @@
+# AWS region where the detector will run.
+aws_region = "us-east-1"
+
+# Environment tag applied to deployed resources.
+environment = "prod"
+
+# Base project name used by the detector.
+project_name = "aws-cost-waste-detector"
+
+# DynamoDB table used to persist findings.
+findings_table_name = "WasteFindings"
+
+# How often the detector automatically scans the account.
+scan_schedule = "rate(1 day)"
+
+# Number of days a continuously detected finding remains OBSERVED
+# before transitioning to OPEN.
+finding_grace_period_days = 7
+
+# Optional email address for HIGH/CRITICAL findings, report summaries,
+# and detector health alarms.
+#
+# SNS will send a confirmation email after deployment.
+alert_email = "you@example.com"
+
+# Existing/default resource names.
+#
+# These can be changed when deploying into an account that already
+# contains resources with the same names.
+lambda_role_name = "cost-waste-detector-lambda-role"
+
+scheduler_name = "aws-cost-waste-detector-daily"
+
+scheduler_role_name = "cost-waste-detector-scheduler-role"
+
+alerts_topic_name = "aws-cost-waste-detector-alerts"
+
+# Generated HTML reports are automatically removed after this many days.
+report_retention_days = 30
+
+# Protect finding history with DynamoDB point-in-time recovery.
+dynamodb_point_in_time_recovery_enabled = true
+
+# Leave false by default so `terraform destroy` can cleanly uninstall
+# the detector. Customers can enable this for stronger protection.
+dynamodb_deletion_protection_enabled = false

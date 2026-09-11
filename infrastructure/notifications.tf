@@ -1,10 +1,10 @@
 # SNS topic used for HIGH and CRITICAL cost-waste alerts.
 resource "aws_sns_topic" "cost_waste_alerts" {
-  name = "aws-cost-waste-detector-alerts"
+  name = var.alerts_topic_name
 
   tags = {
-    Project     = "aws-cost-waste-detector"
-    Environment = "dev"
+    Project     = var.project_name
+    Environment = var.environment
   }
 }
 

@@ -22,3 +22,10 @@ Thumbs.db
 
 # Lambda build artifacts
 infrastructure/lambda_package.zip
+
+# Local Terraform configuration
+terraform.tfvars
+*.auto.tfvars
+
+# Local Lambda invocation output
+lambda-response.json

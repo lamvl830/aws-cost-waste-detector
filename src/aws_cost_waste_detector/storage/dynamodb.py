@@ -238,6 +238,7 @@ def update_existing_finding(
 def save_finding(
     table: Any,
     finding: Finding,
+    grace_period_days: int = 7,
 ) -> str:
     """
     Persist a finding while preserving its observation history.
@@ -247,6 +248,17 @@ def save_finding(
     If the finding already exists, retrieve its existing history,
     recalculate its lifecycle status and priority, and update its
     mutable fields.
+
+    Args:
+        table:
+            DynamoDB table used to store findings.
+
+        finding:
+            Finding discovered during the current scan.
+
+        grace_period_days:
+            Number of days a finding must remain continuously detected
+            before transitioning from OBSERVED to OPEN.
 
     Returns:
         CREATED when the finding is first inserted.
@@ -290,6 +302,7 @@ def save_finding(
             table,
             finding,
             existing_item,
+            grace_period_days=grace_period_days,
         )
 
         return "UPDATED"

@@ -11,7 +11,7 @@ data "archive_file" "cost_waste_detector" {
 
 # Lambda assumes this role when the scheduled detector runs.
 resource "aws_iam_role" "cost_waste_detector_lambda" {
-  name = "cost-waste-detector-lambda-role"
+  name = var.lambda_role_name
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -28,6 +28,11 @@ resource "aws_iam_role" "cost_waste_detector_lambda" {
       }
     ]
   })
+
+  tags = {
+    Project     = var.project_name
+    Environment = var.environment
+  }
 }
 
 
@@ -85,6 +90,17 @@ resource "aws_iam_role_policy" "cost_waste_detector_lambda" {
         Resource = aws_dynamodb_table.waste_findings.arn
       },
       {
+        Sid    = "ManageCostWasteReports"
+        Effect = "Allow"
+
+        Action = [
+          "s3:PutObject",
+          "s3:GetObject"
+        ]
+
+        Resource = "${aws_s3_bucket.reports.arn}/*"
+      },
+      {
         Sid    = "WriteCloudWatchLogs"
         Effect = "Allow"
 
@@ -102,13 +118,19 @@ resource "aws_iam_role_policy" "cost_waste_detector_lambda" {
 
 # Keep Lambda logs for a limited period instead of indefinitely.
 resource "aws_cloudwatch_log_group" "cost_waste_detector" {
-  name              = "/aws/lambda/aws-cost-waste-detector"
+  name              = "/aws/lambda/${var.project_name}"
   retention_in_days = 14
+
+  tags = {
+    Project     = var.project_name
+    Environment = var.environment
+  }
 }
 
 
+# Run the AWS Cost Waste Detector.
 resource "aws_lambda_function" "cost_waste_detector" {
-  function_name = "aws-cost-waste-detector"
+  function_name = var.project_name
 
   role = aws_iam_role.cost_waste_detector_lambda.arn
 
@@ -131,6 +153,8 @@ resource "aws_lambda_function" "cost_waste_detector" {
     variables = {
       WASTE_FINDINGS_TABLE        = aws_dynamodb_table.waste_findings.name
       COST_WASTE_ALERTS_TOPIC_ARN = aws_sns_topic.cost_waste_alerts.arn
+      FINDING_GRACE_PERIOD_DAYS   = tostring(var.finding_grace_period_days)
+      REPORT_BUCKET               = aws_s3_bucket.reports.bucket
     }
   }
 
@@ -140,7 +164,7 @@ resource "aws_lambda_function" "cost_waste_detector" {
   ]
 
   tags = {
-    Project     = "aws-cost-waste-detector"
-    Environment = "dev"
+    Project     = var.project_name
+    Environment = var.environment
   }
 }

@@ -1,6 +1,6 @@
 # EventBridge Scheduler assumes this role when invoking the detector.
 resource "aws_iam_role" "cost_waste_detector_scheduler" {
-  name = "cost-waste-detector-scheduler-role"
+  name = var.scheduler_role_name
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -17,6 +17,11 @@ resource "aws_iam_role" "cost_waste_detector_scheduler" {
       }
     ]
   })
+
+  tags = {
+    Project     = var.project_name
+    Environment = var.environment
+  }
 }
 
 
@@ -43,11 +48,11 @@ resource "aws_iam_role_policy" "cost_waste_detector_scheduler" {
 }
 
 
-# Run the detector automatically once per day.
+# Run the detector automatically according to the configured schedule.
 resource "aws_scheduler_schedule" "cost_waste_detector" {
-  name = "aws-cost-waste-detector-daily"
+  name = var.scheduler_name
 
-  schedule_expression = "rate(1 day)"
+  schedule_expression = var.scan_schedule
 
   flexible_time_window {
     mode = "OFF"
@@ -58,5 +63,5 @@ resource "aws_scheduler_schedule" "cost_waste_detector" {
     role_arn = aws_iam_role.cost_waste_detector_scheduler.arn
   }
 
-  description = "Run the AWS cost waste detector once per day"
+  description = "Run the AWS Cost Waste Detector automatically"
 }

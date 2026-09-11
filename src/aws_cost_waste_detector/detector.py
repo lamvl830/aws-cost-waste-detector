@@ -2,6 +2,10 @@ from typing import Any
 
 import boto3
 
+from aws_cost_waste_detector.notifications import (
+    should_send_finding_notification,
+)
+from aws_cost_waste_detector.notifier import SnsNotifier
 from aws_cost_waste_detector.pricing.ebs import AwsEbsPriceProvider
 from aws_cost_waste_detector.pricing.eip import AwsEipPriceProvider
 from aws_cost_waste_detector.prioritization import (
@@ -20,10 +24,6 @@ from aws_cost_waste_detector.storage.dynamodb import (
     resolve_finding,
     save_finding,
 )
-from aws_cost_waste_detector.notifier import SnsNotifier
-from aws_cost_waste_detector.notifications import (
-    should_send_finding_notification,
-)
 
 
 def run_detector(
@@ -32,6 +32,7 @@ def run_detector(
     region: str,
     table_name: str = "WasteFindings",
     notifier: SnsNotifier | None = None,
+    grace_period_days: int = 7,
 ) -> dict[str, Any]:
     """
     Run the complete AWS cost-waste detection workflow.
@@ -50,6 +51,8 @@ def run_detector(
         region_name=region,
     )
 
+    # AWS Pricing is exposed through us-east-1 even when the
+    # resources being evaluated exist in another AWS region.
     pricing_client = session.client(
         "pricing",
         region_name="us-east-1",
@@ -125,6 +128,7 @@ def run_detector(
         result = save_finding(
             table,
             finding,
+            grace_period_days=grace_period_days,
         )
 
         persistence_results.append(
@@ -171,8 +175,8 @@ def run_detector(
                 notification_item
             )
         ):
-            # Only mark finding as notified after SNS publishes
-            # A failed publish remains eligible for retry
+            # Only mark a finding as notified after SNS publishes.
+            # A failed publish remains eligible for retry.
             message_id = notifier.send_finding(
                 notification_item
             )
