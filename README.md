@@ -64,17 +64,29 @@ EventBridge Scheduler
 
 ## Why This Project?
 
-Cloud waste is often easy to create and difficult to notice.
+AWS provides powerful cost-management tools, but teams can still miss
+resource-level waste between billing reviews.
 
-Examples include:
+AWS Cost Waste Detector complements those services by:
 
-- EBS volumes left behind after EC2 instances are terminated
-- Elastic IP addresses that are allocated but no longer used
-- Resources that remain unused for weeks or months
+- Scanning actual AWS resources on a schedule
+- Tracking findings across scans instead of reporting one-time observations
+- Waiting for waste conditions to persist before prioritizing them
+- Ranking findings by estimated savings, severity, and age
+- Sending alerts when high-priority waste is detected
+- Generating private, account-local reports without sending AWS credentials
+  or resource data to an external service
 
-AWS Cost Waste Detector continuously scans for these conditions and
-turns them into prioritized, persistent findings instead of one-time
-console observations.
+Current examples include:
+
+- EBS volumes left unattached after EC2 instances are terminated
+- Elastic IP addresses that remain allocated but unused
+- Resources that continue generating avoidable costs over time
+
+This project is not intended to replace AWS Cost Optimization Hub,
+Trusted Advisor, Compute Optimizer, or Cost Explorer. It provides a
+focused, self-hosted workflow for turning specific resource conditions
+into persistent findings and actionable alerts.
 
 ## Finding Lifecycle
 
@@ -136,6 +148,9 @@ estimates the monthly cost using approximately 730 hours per month.
 
 Savings values are estimates. Actual AWS billing may vary.
 
+For some EBS volume types, additional IOPS or throughput charges may not
+be included in the current estimate.
+
 ## HTML Reports
 
 Every scan generates a self-contained HTML report containing:
@@ -148,6 +163,7 @@ Every scan generates a self-contained HTML report containing:
 - Estimated annual savings
 - Priority
 - Severity
+- Resource type
 - Resource IDs
 - Finding age
 - Recommendations
@@ -158,7 +174,7 @@ Reports are stored in a private S3 bucket.
 Public access is blocked, encryption at rest is enabled, and reports are
 automatically deleted after the configured retention period.
 
-A temporary presigned URL is generated for report access.
+A temporary presigned URL is generated for private report access.
 
 ## Notifications
 
@@ -173,8 +189,8 @@ same finding is not repeatedly emailed on every scan.
 
 ### Report Notifications
 
-When a scan contains findings, the detector can send a consolidated
-summary containing a private report link.
+When a scan contains findings, the detector sends a consolidated summary
+containing estimated savings and a private report link.
 
 Empty scans still generate reports but do not send unnecessary report
 emails.
@@ -209,9 +225,7 @@ The Lambda execution role can:
 The detector does **not** receive permissions to automatically delete
 EBS volumes or release Elastic IP addresses.
 
-See:
-
-[Security Model](docs/SECURITY.md)
+See the full [Security Model](docs/SECURITY.md).
 
 ## Architecture
 
@@ -229,9 +243,8 @@ Amazon CloudWatch
 AWS IAM
 ```
 
-For a deeper explanation:
-
-[Architecture](docs/ARCHITECTURE.md)
+For a deeper explanation, see the
+[Architecture documentation](docs/ARCHITECTURE.md).
 
 ## Installation
 
@@ -244,20 +257,39 @@ You need:
 - Git
 - AWS credentials with permission to deploy the Terraform resources
 
-Clone the repository:
+Python is only required if you want to run the test suite or develop the
+project locally.
+
+### 1. Clone the repository
 
 ```bash
 git clone https://github.com/lamvl830/aws-cost-waste-detector.git
 cd aws-cost-waste-detector
 ```
 
-Move into the infrastructure directory:
+### 2. Verify AWS authentication
+
+Before deploying, confirm which AWS account your credentials point to:
+
+```bash
+aws sts get-caller-identity
+```
+
+The returned account should be the AWS account where you want the
+detector installed.
+
+If you use a named AWS CLI profile, configure that profile through your
+normal AWS CLI credential workflow before running Terraform.
+
+### 3. Create your deployment configuration
+
+Move into the Terraform directory:
 
 ```bash
 cd infrastructure
 ```
 
-Create your local Terraform configuration.
+Copy the example configuration.
 
 PowerShell:
 
@@ -271,25 +303,221 @@ macOS/Linux:
 cp terraform.tfvars.example terraform.tfvars
 ```
 
-Edit `terraform.tfvars`, then deploy:
+Edit `terraform.tfvars` for your AWS account and preferences.
+
+Example:
+
+```hcl
+aws_region = "us-east-1"
+
+environment = "prod"
+
+project_name = "aws-cost-waste-detector"
+
+findings_table_name = "WasteFindings"
+
+scan_schedule = "rate(1 day)"
+
+finding_grace_period_days = 7
+
+alert_email = "you@example.com"
+
+report_retention_days = 30
+
+dynamodb_point_in_time_recovery_enabled = true
+
+dynamodb_deletion_protection_enabled = false
+```
+
+`terraform.tfvars` is intentionally ignored by Git so deployment-specific
+values such as email addresses are not committed to the repository.
+
+### 4. Initialize Terraform
 
 ```bash
 terraform init
+```
+
+### 5. Validate and review the deployment
+
+```bash
 terraform validate
 terraform plan
+```
+
+Review the Terraform plan before continuing.
+
+### 6. Deploy
+
+```bash
 terraform apply
 ```
 
-If an SNS email address is configured, confirm the subscription email
-sent by AWS after deployment.
+Review the plan again and confirm the deployment when prompted.
 
-For the full installation guide:
+After deployment, Terraform displays useful outputs including:
 
-[Installation Guide](docs/INSTALL.md)
+- AWS region
+- Lambda function name
+- Lambda ARN
+- DynamoDB table name
+- SNS topic ARN
+- EventBridge Scheduler name
+- CloudWatch log group
+- S3 report bucket name
+
+You can display them again with:
+
+```bash
+terraform output
+```
+
+### 7. Confirm the SNS subscription
+
+If `alert_email` is configured, Amazon SNS sends a subscription
+confirmation email.
+
+Open that email and confirm the subscription.
+
+Notifications are not delivered until the subscription is confirmed.
+
+For a more detailed walkthrough, see the
+[Installation Guide](docs/INSTALL.md).
+
+## Quick Start
+
+After deployment, the detector runs automatically according to
+`scan_schedule`.
+
+You can also run it manually at any time.
+
+### PowerShell
+
+From the `infrastructure` directory, retrieve the deployed Lambda name
+and AWS region:
+
+```powershell
+$FUNCTION_NAME = terraform output -raw lambda_function_name
+$REGION = terraform output -raw aws_region
+```
+
+Invoke the detector:
+
+```powershell
+aws lambda invoke `
+  --function-name $FUNCTION_NAME `
+  --payload '{}' `
+  --cli-binary-format raw-in-base64-out `
+  --region $REGION `
+  --no-cli-pager `
+  lambda-response.json
+```
+
+View the response:
+
+```powershell
+Get-Content lambda-response.json
+```
+
+Open the generated HTML report directly in your default browser:
+
+```powershell
+$response = Get-Content lambda-response.json | ConvertFrom-Json
+Start-Process $response.report.url
+```
+
+### macOS / Linux
+
+Retrieve the deployed Lambda name and AWS region:
+
+```bash
+FUNCTION_NAME=$(terraform output -raw lambda_function_name)
+REGION=$(terraform output -raw aws_region)
+```
+
+Invoke the detector:
+
+```bash
+aws lambda invoke \
+  --function-name "$FUNCTION_NAME" \
+  --payload '{}' \
+  --cli-binary-format raw-in-base64-out \
+  --region "$REGION" \
+  lambda-response.json
+```
+
+View the response:
+
+```bash
+cat lambda-response.json
+```
+
+A successful invocation returns information similar to:
+
+```json
+{
+  "account_id": "123456789012",
+  "region": "us-east-1",
+  "total_findings": 0,
+  "resolved_findings": 0,
+  "notifications_sent": 0,
+  "report_notification_message_id": null,
+  "report": {
+    "bucket": "example-report-bucket",
+    "key": "reports/123456789012/us-east-1/cost-waste-report-example.html",
+    "url": "https://example-presigned-url"
+  },
+  "summary": {
+    "total_findings": 0,
+    "total_monthly_savings": 0,
+    "total_annual_savings": 0,
+    "top_opportunities": []
+  }
+}
+```
+
+The detector will:
+
+1. Scan supported AWS resources.
+2. Estimate potential savings.
+3. Store or update findings in DynamoDB.
+4. Reconcile findings that disappeared since the previous scan.
+5. Rank current findings.
+6. Send eligible notifications.
+7. Generate a private HTML report in S3.
+
+After deployment, no long-running local process is required. The detector
+runs inside your AWS account through AWS Lambda and EventBridge
+Scheduler.
+
+## Viewing Reports
+
+Every scan generates a private HTML report in the detector's S3 bucket.
+
+When findings exist, the SNS summary notification includes a temporary
+presigned URL to the report.
+
+You can find the report bucket with:
+
+```bash
+terraform output -raw report_bucket_name
+```
+
+Reports are private and are not publicly accessible.
+
+By default, generated reports are retained for 30 days. This can be
+changed using:
+
+```hcl
+report_retention_days = 30
+```
+
+Presigned report links are temporary. Treat them as temporary credentials
+and do not publish or commit them.
 
 ## Configuration
 
-Example configuration:
+Common configuration options include:
 
 ```hcl
 aws_region = "us-east-1"
@@ -315,16 +543,62 @@ dynamodb_deletion_protection_enabled = false
 
 See:
 
-`infrastructure/terraform.tfvars.example`
+```text
+infrastructure/terraform.tfvars.example
+```
 
 for all supported configuration values.
 
+## Automatic Scans
+
+By default, the detector runs once per day:
+
+```hcl
+scan_schedule = "rate(1 day)"
+```
+
+Amazon EventBridge Scheduler invokes the detector Lambda automatically.
+
+The schedule can be changed through `terraform.tfvars`.
+
+## DynamoDB Finding History
+
+The detector stores findings in DynamoDB using a resource/rule identity:
+
+```text
+PK = RESOURCE#{resource_arn}
+SK = RULE#{rule_id}
+```
+
+This allows one AWS resource to have multiple independent cost-waste
+findings while preserving lifecycle history across scans.
+
+Point-in-time recovery is enabled by default.
+
 ## Testing
 
-Create and activate a Python virtual environment, install development
-dependencies, and run:
+For local development, Python 3.11 or newer is required.
+
+Create and activate a virtual environment, then install the project with
+development dependencies.
+
+PowerShell:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -e ".[dev]"
+pytest
+```
+
+macOS/Linux:
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -e ".[dev]"
 pytest
 ```
 
@@ -335,10 +609,11 @@ for pull requests and changes to `main`.
 
 ```text
 aws-cost-waste-detector/
-├── docs/            # Architecture, install, and security docs
+├── docs/            # Architecture, installation, and security docs
 ├── infrastructure/  # Terraform deployment
 ├── src/             # Detector application code
 ├── tests/           # Automated tests
+├── pyproject.toml
 └── README.md
 ```
 
@@ -383,14 +658,35 @@ terraform destroy
 
 Review the Terraform destruction plan before confirming.
 
-If DynamoDB deletion protection was enabled, disable it and apply the
-configuration before destroying the deployment.
+If DynamoDB deletion protection was enabled:
+
+```hcl
+dynamodb_deletion_protection_enabled = true
+```
+
+set it back to:
+
+```hcl
+dynamodb_deletion_protection_enabled = false
+```
+
+apply that change first, and then run `terraform destroy`.
+
+## Documentation
+
+Additional documentation:
+
+- [Installation Guide](docs/INSTALL.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Security Model](docs/SECURITY.md)
 
 ## Disclaimer
 
 AWS Cost Waste Detector provides cost optimization recommendations and
 estimated savings.
 
-It does not automatically modify or delete customer resources.
+Actual AWS billing may differ from the estimates shown by the detector.
+
+The detector does not automatically modify or delete customer resources.
 
 Always review a finding before taking remediation action.
