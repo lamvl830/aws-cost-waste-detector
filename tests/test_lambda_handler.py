@@ -27,6 +27,11 @@ def test_lambda_handler_runs_detector(
         "TestWasteFindings",
     )
 
+    monkeypatch.delenv(
+        "COST_WASTE_ALERTS_TOPIC_ARN",
+        raising=False,
+    )
+
     monkeypatch.setattr(
         handler_module.boto3,
         "Session",
@@ -40,6 +45,7 @@ def test_lambda_handler_runs_detector(
         *,
         region,
         table_name,
+        notifier=None,
     ):
         calls["session"] = session
         calls["region"] = region
@@ -61,6 +67,7 @@ def test_lambda_handler_runs_detector(
             },
             "persistence_results": [],
             "resolution_results": [],
+            "notification_results": [],
         }
 
     monkeypatch.setattr(

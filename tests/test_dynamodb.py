@@ -9,6 +9,7 @@ from aws_cost_waste_detector.storage.dynamodb import (
     list_active_findings,
     put_new_finding,
     resolve_finding,
+    mark_finding_notified,
     save_finding,
     update_existing_finding,
 )
@@ -319,7 +320,12 @@ def test_update_existing_finding_reactivates_resolved_finding():
             0,
             tzinfo=timezone.utc,
         ).isoformat(),
+
+        # A previously-notified finding had already triggered notification
+        "last_notified_at": "2026-09-01T12:00:00+00:00",
     }
+
+    
 
     update_existing_finding(
         table,
@@ -343,6 +349,9 @@ def test_update_existing_finding_reactivates_resolved_finding():
     # The finding is active again, so it should no longer have
     # a resolution timestamp.
     assert values[":resolved_at"] is None
+
+    # A new occurrence should be eligible to notify again
+    assert values[":last_notified_at"] is None
 
 
 def test_resolve_finding():
@@ -464,6 +473,9 @@ def test_new_finding_stores_priority_fields():
         finding
     )
 
+    #Brand-new finding has never been notified
+    assert item["last_notified_at"] is None
+
     # A brand-new LOW severity finding with no known savings
     # starts at age zero and therefore has a LOW priority.
     assert item["age_days"] == 0
@@ -509,4 +521,33 @@ def test_existing_finding_update_stores_priority_fields():
     assert (
         "priority_label = :priority_label"
         in call["UpdateExpression"]
+    )
+
+
+def test_mark_finding_notified():
+    table = FakeTable()
+
+    item = {
+        "PK": "RESOURCE#test-resource",
+        "SK": "RULE#test-rule",
+    }
+
+    notified_at = mark_finding_notified(
+        table,
+        item,
+    )
+
+    assert notified_at.endswith("+00:00")
+    assert len(table.update_item_calls) == 1
+
+    call = table.update_item_calls[0]
+
+    assert call["Key"] == {
+        "PK": "RESOURCE#test-resource",
+        "SK": "RULE#test-rule",
+    }
+
+    assert (
+        call["ExpressionAttributeValues"][":last_notified_at"]
+        == notified_at
     )

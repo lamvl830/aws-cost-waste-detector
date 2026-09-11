@@ -8,6 +8,7 @@ from aws_cost_waste_detector.models import Finding
 from aws_cost_waste_detector.prioritization import (
     calculate_finding_priority,
 )
+from aws_cost_waste_detector.notifications import notification_timestamp
 
 
 def finding_key(finding: Finding) -> dict[str, str]:
@@ -66,6 +67,7 @@ def finding_to_item(finding: Finding) -> dict[str, Any]:
         "first_seen": now.isoformat(),
         "last_seen": now.isoformat(),
         "resolved_at": None,
+        "last_notified_at": None,
         "age_days": priority["age_days"],
         "priority_score": priority["priority_score"],
         "priority_label": priority["priority_label"],
@@ -142,6 +144,7 @@ def update_existing_finding(
                 "last_seen = :last_seen, "
                 "#status = :status, "
                 "resolved_at = :resolved_at, "
+                "last_notified_at = :last_notified_at, "
                 "title = :title, "
                 "description = :description, "
                 "severity = :severity, "
@@ -160,6 +163,7 @@ def update_existing_finding(
                 ":last_seen": now.isoformat(),
                 ":status": status,
                 ":resolved_at": None,
+                ":last_notified_at": None,
                 ":title": finding.title,
                 ":description": finding.description,
                 ":severity": finding.severity,
@@ -289,6 +293,34 @@ def save_finding(
         )
 
         return "UPDATED"
+
+
+def mark_finding_notified(
+    table: Any,
+    item: dict[str, Any],
+) -> str:
+    """
+    Record when finding notification was successfully sent.
+
+    The timestamp is persisted so future detector runs can avoid
+    repeatedly notifying about same finding.
+    """
+    notified_at = notification_timestamp()
+
+    table.update_item(
+        Key={
+            "PK": item["PK"],
+            "SK": item["SK"],
+        },
+        UpdateExpression=(
+            "SET last_notified_at = :last_notified_at"
+        ),
+        ExpressionAttributeValues={
+            ":last_notified_at": notified_at,
+        },
+    )
+
+    return notified_at
 
 
 def resolve_finding(

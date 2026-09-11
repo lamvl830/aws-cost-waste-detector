@@ -52,6 +52,16 @@ resource "aws_iam_role_policy" "cost_waste_detector_lambda" {
         Resource = "*"
       },
       {
+        Sid    = "PublishCostWasteAlerts"
+        Effect = "Allow"
+
+        Action = [
+          "sns:Publish"
+        ]
+
+        Resource = aws_sns_topic.cost_waste_alerts.arn
+      },
+      {
         Sid    = "ReadAWSPrices"
         Effect = "Allow"
 
@@ -119,7 +129,8 @@ resource "aws_lambda_function" "cost_waste_detector" {
 
   environment {
     variables = {
-      WASTE_FINDINGS_TABLE = aws_dynamodb_table.waste_findings.name
+      WASTE_FINDINGS_TABLE        = aws_dynamodb_table.waste_findings.name
+      COST_WASTE_ALERTS_TOPIC_ARN = aws_sns_topic.cost_waste_alerts.arn
     }
   }
 
