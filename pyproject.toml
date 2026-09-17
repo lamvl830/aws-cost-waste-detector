@@ -1,6 +1,6 @@
 [project]
 name = "aws-cost-waste-detector"
-version = "0.1.0"
+version = "0.2.0"
 description = "FinOps enrichment and remediation platform for AWS cost optimization recommendations"
 requires-python = ">=3.11"
 dependencies = [
