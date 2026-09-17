@@ -44,3 +44,10 @@ dynamodb_point_in_time_recovery_enabled = true
 # Leave false by default so `terraform destroy` can cleanly uninstall
 # the detector. Customers can enable this for stronger protection.
 dynamodb_deletion_protection_enabled = false
+
+# AWS regions whose resources should be scanned.
+#
+# If omitted, the detector scans only aws_region.
+scan_regions = [
+  "us-east-1",
+]

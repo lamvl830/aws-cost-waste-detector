@@ -7,7 +7,7 @@ prioritizes savings opportunities, and generates private HTML reports.
 The detector runs entirely inside your AWS account using AWS Lambda and
 Terraform.
 
-## Current v0.1 Features
+## Current Features
 
 AWS Cost Waste Detector currently detects:
 
@@ -25,6 +25,7 @@ It also provides:
 - Private HTML reports stored in Amazon S3
 - Temporary presigned report URLs
 - EventBridge scheduled scans
+- Multi-region AWS resource scanning
 - CloudWatch logging
 - Lambda error and throttling alarms
 - Terraform-based deployment
@@ -156,7 +157,7 @@ be included in the current estimate.
 Every scan generates a self-contained HTML report containing:
 
 - AWS account
-- Region
+- Region(s)
 - Generation timestamp
 - Current findings
 - Estimated monthly savings
@@ -206,7 +207,7 @@ These alarms publish to the detector SNS topic.
 
 ## Security
 
-Version 0.1 is self-hosted.
+AWS Cost Waste Detector is self-hosted.
 
 AWS resources and finding data remain inside the customer's AWS account.
 
@@ -242,6 +243,10 @@ Amazon SNS
 Amazon CloudWatch
 AWS IAM
 ```
+
+The detector infrastructure is deployed in one AWS region, while
+supported AWS resources can be scanned across multiple configured
+regions.
 
 For a deeper explanation, see the
 [Architecture documentation](docs/ARCHITECTURE.md).
@@ -308,7 +313,14 @@ Edit `terraform.tfvars` for your AWS account and preferences.
 Example:
 
 ```hcl
+# Region where the detector infrastructure is deployed.
 aws_region = "us-east-1"
+
+# Regions whose AWS resources should be scanned.
+scan_regions = [
+  "us-east-1",
+  "us-east-2",
+]
 
 environment = "prod"
 
@@ -357,7 +369,8 @@ Review the plan again and confirm the deployment when prompted.
 
 After deployment, Terraform displays useful outputs including:
 
-- AWS region
+- AWS deployment region
+- Scan regions
 - Lambda function name
 - Lambda ARN
 - DynamoDB table name
@@ -394,7 +407,7 @@ You can also run it manually at any time.
 ### PowerShell
 
 From the `infrastructure` directory, retrieve the deployed Lambda name
-and AWS region:
+and AWS deployment region:
 
 ```powershell
 $FUNCTION_NAME = terraform output -raw lambda_function_name
@@ -428,7 +441,7 @@ Start-Process $response.report.url
 
 ### macOS / Linux
 
-Retrieve the deployed Lambda name and AWS region:
+Retrieve the deployed Lambda name and AWS deployment region:
 
 ```bash
 FUNCTION_NAME=$(terraform output -raw lambda_function_name)
@@ -452,19 +465,23 @@ View the response:
 cat lambda-response.json
 ```
 
-A successful invocation returns information similar to:
+A successful multi-region invocation returns information similar to:
 
 ```json
 {
   "account_id": "123456789012",
   "region": "us-east-1",
+  "scan_regions": [
+    "us-east-1",
+    "us-east-2"
+  ],
   "total_findings": 0,
   "resolved_findings": 0,
   "notifications_sent": 0,
   "report_notification_message_id": null,
   "report": {
     "bucket": "example-report-bucket",
-    "key": "reports/123456789012/us-east-1/cost-waste-report-example.html",
+    "key": "reports/123456789012/multi-region/cost-waste-report-example.html",
     "url": "https://example-presigned-url"
   },
   "summary": {
@@ -476,15 +493,19 @@ A successful invocation returns information similar to:
 }
 ```
 
+The top-level `region` identifies the detector's deployment region.
+`scan_regions` identifies the AWS regions whose supported resources were
+scanned.
+
 The detector will:
 
-1. Scan supported AWS resources.
+1. Scan supported AWS resources in each configured scan region.
 2. Estimate potential savings.
 3. Store or update findings in DynamoDB.
 4. Reconcile findings that disappeared since the previous scan.
 5. Rank current findings.
 6. Send eligible notifications.
-7. Generate a private HTML report in S3.
+7. Generate one private consolidated HTML report in S3.
 
 After deployment, no long-running local process is required. The detector
 runs inside your AWS account through AWS Lambda and EventBridge
@@ -493,6 +514,14 @@ Scheduler.
 ## Viewing Reports
 
 Every scan generates a private HTML report in the detector's S3 bucket.
+
+Single-region reports use a region-specific S3 path.
+
+Multi-region reports are stored under a consolidated path similar to:
+
+```text
+reports/<account-id>/multi-region/
+```
 
 When findings exist, the SNS summary notification includes a temporary
 presigned URL to the report.
@@ -521,6 +550,11 @@ Common configuration options include:
 
 ```hcl
 aws_region = "us-east-1"
+
+scan_regions = [
+  "us-east-1",
+  "us-east-2",
+]
 
 environment = "prod"
 
@@ -561,6 +595,39 @@ Amazon EventBridge Scheduler invokes the detector Lambda automatically.
 
 The schedule can be changed through `terraform.tfvars`.
 
+## Multi-Region Scanning
+
+The detector infrastructure is deployed into a single home region using
+`aws_region`.
+
+Resources can be scanned across multiple AWS regions using
+`scan_regions`.
+
+Example:
+
+```hcl
+aws_region = "us-east-1"
+
+scan_regions = [
+  "us-east-1",
+  "us-east-2",
+  "us-west-2",
+]
+```
+
+In this configuration:
+
+- Lambda, DynamoDB, S3, SNS, and EventBridge remain in `us-east-1`
+- EBS volumes and Elastic IP addresses are scanned in all three regions
+- Finding lifecycle data is stored centrally in DynamoDB
+- Findings from all regions are combined into one HTML report
+- HIGH and CRITICAL finding notifications identify the originating region
+
+If `scan_regions` is omitted, the detector scans only `aws_region`.
+
+This preserves the original single-region behavior for deployments that
+do not configure additional scan regions.
+
 ## DynamoDB Finding History
 
 The detector stores findings in DynamoDB using a resource/rule identity:
@@ -572,6 +639,12 @@ SK = RULE#{rule_id}
 
 This allows one AWS resource to have multiple independent cost-waste
 findings while preserving lifecycle history across scans.
+
+Findings from every configured scan region are stored centrally in the
+DynamoDB table located in the detector's deployment region.
+
+Finding records include region information so lifecycle reconciliation
+remains scoped to the region where the resource was evaluated.
 
 Point-in-time recovery is enabled by default.
 
@@ -619,22 +692,25 @@ aws-cost-waste-detector/
 
 ## Current Scope
 
-Version 0.1 currently supports:
+The detector currently supports:
 
 ```text
 1 AWS account per deployment
-1 AWS region per deployment
+Multiple AWS regions per deployment
 
 Waste detectors:
 - Unattached EBS volumes
 - Unused Elastic IP addresses
 ```
 
+The detector's infrastructure remains centralized in one deployment
+region while supported AWS resources can be evaluated across all
+configured scan regions.
+
 ## Roadmap
 
 Potential future additions include:
 
-- Multi-region scanning
 - AWS Organizations / multi-account support
 - Additional waste detectors
 - RDS optimization
