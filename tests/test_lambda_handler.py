@@ -61,6 +61,7 @@ def test_lambda_handler_runs_detector(
         session,
         *,
         region,
+        storage_region=None,
         table_name,
         notifier=None,
         grace_period_days=7,
@@ -172,6 +173,7 @@ def test_lambda_handler_uses_configured_grace_period(
         session,
         *,
         region,
+        storage_region=None,
         table_name,
         notifier=None,
         grace_period_days=7,
@@ -286,6 +288,7 @@ def test_lambda_handler_publishes_html_report(
         session,
         *,
         region,
+        storage_region=None,
         table_name,
         notifier=None,
         grace_period_days=7,
@@ -359,3 +362,157 @@ def test_lambda_handler_publishes_html_report(
         "key": "reports/test.html",
         "url": "https://example.com/report",
     }
+
+
+def test_parse_scan_regions_defaults_to_lambda_region():
+    regions = handler_module._parse_scan_regions(
+        None,
+        default_region="us-east-1",
+    )
+    assert regions == [
+        "us-east-1",
+    ]
+
+
+def test_parse_scan_regions_supports_multiple_regions():
+    regions = handler_module._parse_scan_regions(
+        "us-east-1,us-east-2,us-west-2",
+        default_region="us-east-1",
+    )
+    assert regions == [
+        "us-east-1",
+        "us-east-2",
+        "us-west-2",
+    ]
+
+
+def test_parse_scan_regions_removes_duplicates_and_whitespace():
+    regions = handler_module._parse_scan_regions(
+        "us-east-1, us-east-2,us-east-1 ",
+        default_region="us-east-1",
+    )
+    assert regions == [
+        "us-east-1",
+        "us-east-2",
+    ]
+
+
+def test_lambda_handler_scans_multiple_regions(
+    monkeypatch,
+):
+    monkeypatch.setenv(
+        "AWS_REGION",
+        "us-east-1",
+    )
+
+    monkeypatch.setenv(
+        "SCAN_REGIONS",
+        "us-east-1,us-east-2,us-west-2",
+    )
+
+    monkeypatch.setenv(
+        "WASTE_FINDINGS_TABLE",
+        "TestWasteFindings",
+    )
+
+    monkeypatch.delenv(
+        "COST_WASTE_ALERTS_TOPIC_ARN",
+        raising=False,
+    )
+
+    monkeypatch.delenv(
+        "REPORT_BUCKET",
+        raising=False,
+    )
+
+    monkeypatch.setattr(
+        handler_module.boto3,
+        "Session",
+        FakeSession,
+    )
+
+    calls = []
+
+    def fake_run_detector(
+        session,
+        *,
+        region,
+        storage_region=None,
+        table_name,
+        notifier=None,
+        grace_period_days=7,
+    ):
+        calls.append(
+            {
+                "region": region,
+                "storage_region": storage_region,
+            }
+        )
+
+        return {
+            "account_id": "123456789012",
+            "region": region,
+            "findings": [
+                {
+                    "resource_id": f"resource-{region}",
+                    "region": region,
+                    "estimated_monthly_savings": 5.0,
+                    "severity": "MEDIUM",
+                    "priority_score": 10,
+                    "priority_label": "LOW",
+                }
+            ],
+            "summary": {
+                "total_findings": 1,
+                "total_monthly_savings": 5.0,
+                "total_annual_savings": 60.0,
+                "top_opportunities": [],
+            },
+            "persistence_results": [],
+            "resolution_results": [],
+            "notification_results": [],
+        }
+
+    monkeypatch.setattr(
+        handler_module,
+        "run_detector",
+        fake_run_detector,
+    )
+
+    result = handler_module.lambda_handler(
+        {},
+        None,
+    )
+
+    assert calls == [
+        {
+            "region": "us-east-1",
+            "storage_region": "us-east-1",
+        },
+        {
+            "region": "us-east-2",
+            "storage_region": "us-east-1",
+        },
+        {
+            "region": "us-west-2",
+            "storage_region": "us-east-1",
+        },
+    ]
+
+    assert result["scan_regions"] == [
+        "us-east-1",
+        "us-east-2",
+        "us-west-2",
+    ]
+
+    assert result["total_findings"] == 3
+
+    assert (
+        result["summary"]["total_monthly_savings"]
+        == 15.0
+    )
+
+    assert (
+        result["summary"]["total_annual_savings"]
+        == 180.0
+    )

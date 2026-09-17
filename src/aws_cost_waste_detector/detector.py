@@ -30,6 +30,7 @@ def run_detector(
     session: boto3.Session,
     *,
     region: str,
+    storage_region: str | None = None,
     table_name: str = "WasteFindings",
     notifier: SnsNotifier | None = None,
     grace_period_days: int = 7,
@@ -45,6 +46,9 @@ def run_detector(
 
     account_id = identity["Account"]
     partition = identity["Arn"].split(":", 2)[1]
+
+    if storage_region is None:
+        storage_region = region
 
     ec2 = session.client(
         "ec2",
@@ -68,7 +72,7 @@ def run_detector(
 
     dynamodb_resource = session.resource(
         "dynamodb",
-        region_name=region,
+        region_name=storage_region,
     )
 
     table = dynamodb_resource.Table(

@@ -62,3 +62,9 @@ output "report_bucket_name" {
   description = "Private S3 bucket containing generated HTML reports."
   value       = aws_s3_bucket.reports.bucket
 }
+
+
+output "scan_regions" {
+  description = "AWS regions scanned for cost-waste findings."
+  value       = local.effective_scan_regions
+}

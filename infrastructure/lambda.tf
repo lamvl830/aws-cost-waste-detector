@@ -155,6 +155,9 @@ resource "aws_lambda_function" "cost_waste_detector" {
       COST_WASTE_ALERTS_TOPIC_ARN = aws_sns_topic.cost_waste_alerts.arn
       FINDING_GRACE_PERIOD_DAYS   = tostring(var.finding_grace_period_days)
       REPORT_BUCKET               = aws_s3_bucket.reports.bucket
+
+      # Pass the configured scan regions to Lambda as a comma-separated list.
+      SCAN_REGIONS = join(",", local.effective_scan_regions)
     }
   }
 

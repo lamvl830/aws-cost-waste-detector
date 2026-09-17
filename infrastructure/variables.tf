@@ -114,3 +114,20 @@ variable "report_retention_days" {
     error_message = "report_retention_days must be greater than zero."
   }
 }
+
+
+variable "scan_regions" {
+  description = "AWS regions scanned for cost-waste findings. If not configured, only aws_region is scanned."
+  type        = list(string)
+  default     = null
+
+  validation {
+    condition = (
+      var.scan_regions == null
+      ? true
+      : length(var.scan_regions) > 0
+    )
+
+    error_message = "scan_regions must contain at least one AWS region when configured."
+  }
+}
