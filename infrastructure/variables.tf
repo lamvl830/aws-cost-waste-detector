@@ -131,3 +131,105 @@ variable "scan_regions" {
     error_message = "scan_regions must contain at least one AWS region when configured."
   }
 }
+
+
+variable "ec2_idle_lookback_days" {
+  description = "Number of days of CloudWatch metrics used to evaluate whether an EC2 instance appears idle."
+  type        = number
+  default     = 7
+
+  validation {
+    condition = (
+      var.ec2_idle_lookback_days > 0
+      && floor(var.ec2_idle_lookback_days) == var.ec2_idle_lookback_days
+    )
+
+    error_message = "ec2_idle_lookback_days must be a positive whole number."
+  }
+}
+
+
+variable "ec2_idle_average_cpu_threshold_percent" {
+  description = "Maximum average CPU utilization percentage for an EC2 instance to be considered idle."
+  type        = number
+  default     = 5
+
+  validation {
+    condition = (
+      var.ec2_idle_average_cpu_threshold_percent >= 0
+      && var.ec2_idle_average_cpu_threshold_percent <= 100
+    )
+    error_message = "ec2_idle_average_cpu_threshold_percent must be between 0 and 100."
+  }
+}
+
+
+variable "ec2_idle_maximum_cpu_threshold_percent" {
+  description = "Maximum observed CPU utilization percentage for an EC2 instance to be considered idle."
+  type        = number
+  default     = 20
+
+  validation {
+    condition = (
+      var.ec2_idle_maximum_cpu_threshold_percent >= 0
+      && var.ec2_idle_maximum_cpu_threshold_percent <= 100
+    )
+    error_message = "ec2_idle_maximum_cpu_threshold_percent must be between 0 and 100."
+  }
+}
+
+
+variable "ec2_idle_network_in_threshold_mib" {
+  description = "Maximum inbound network traffic in MiB over the lookback window for an EC2 instance to be considered idle."
+  type        = number
+  default     = 100
+
+  validation {
+    condition     = var.ec2_idle_network_in_threshold_mib >= 0
+    error_message = "ec2_idle_network_in_threshold_mib cannot be negative."
+  }
+}
+
+
+variable "ec2_idle_network_out_threshold_mib" {
+  description = "Maximum outbound network traffic in MiB over the lookback window for an EC2 instance to be considered idle."
+  type        = number
+  default     = 100
+
+  validation {
+    condition     = var.ec2_idle_network_out_threshold_mib >= 0
+    error_message = "ec2_idle_network_out_threshold_mib cannot be negative."
+  }
+}
+
+
+variable "ec2_idle_minimum_metric_coverage" {
+  description = "Minimum fraction of expected CloudWatch datapoints required before an EC2 instance can be classified as idle."
+  type        = number
+  default     = 0.80
+
+  validation {
+    condition = (
+      var.ec2_idle_minimum_metric_coverage > 0
+      && var.ec2_idle_minimum_metric_coverage <= 1
+    )
+
+    error_message = "ec2_idle_minimum_metric_coverage must be greater than 0 and no greater than 1."
+  }
+}
+
+variable "lambda_timeout_seconds" {
+  description = "Maximum execution time in seconds for the detector Lambda."
+  type        = number
+  default     = 180
+
+  validation {
+    condition = (
+      var.lambda_timeout_seconds >= 1
+      && var.lambda_timeout_seconds <= 900
+      && floor(var.lambda_timeout_seconds) == var.lambda_timeout_seconds
+    )
+
+    error_message = "lambda_timeout_seconds must be a whole number between 1 and 900."
+  }
+}

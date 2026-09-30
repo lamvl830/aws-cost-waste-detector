@@ -2,6 +2,11 @@ from typing import Any
 
 import boto3
 
+from aws_cost_waste_detector.ec2_idle import (
+    Ec2IdleThresholds,
+    scan_idle_ec2,
+)
+from aws_cost_waste_detector.ec2_pricing import Ec2OnDemandPriceProvider
 from aws_cost_waste_detector.notifications import (
     should_send_finding_notification,
 )
@@ -12,9 +17,7 @@ from aws_cost_waste_detector.prioritization import (
     calculate_current_finding_priority,
 )
 from aws_cost_waste_detector.reconciliation import find_missing_items
-from aws_cost_waste_detector.reporting import (
-    build_cost_summary,
-)
+from aws_cost_waste_detector.reporting import build_cost_summary
 from aws_cost_waste_detector.scanners.ebs import scan_unattached_ebs
 from aws_cost_waste_detector.scanners.eip import scan_unused_eips
 from aws_cost_waste_detector.storage.dynamodb import (
@@ -34,6 +37,8 @@ def run_detector(
     table_name: str = "WasteFindings",
     notifier: SnsNotifier | None = None,
     grace_period_days: int = 7,
+    ec2_idle_lookback_days: int = 7,
+    ec2_idle_thresholds: Ec2IdleThresholds | None = None,
 ) -> dict[str, Any]:
     """
     Run the complete AWS cost-waste detection workflow.
@@ -50,8 +55,14 @@ def run_detector(
     if storage_region is None:
         storage_region = region
 
+    # Resource clients operate in the region currently being scanned.
     ec2 = session.client(
         "ec2",
+        region_name=region,
+    )
+
+    cloudwatch = session.client(
+        "cloudwatch",
         region_name=region,
     )
 
@@ -70,6 +81,12 @@ def run_detector(
         pricing_client,
     )
 
+    ec2_price_provider = Ec2OnDemandPriceProvider(
+        pricing_client,
+    )
+
+    # Detector state remains centralized in the deployment/storage
+    # region even when resources are scanned in other regions.
     dynamodb_resource = session.resource(
         "dynamodb",
         region_name=storage_region,
@@ -90,6 +107,7 @@ def run_detector(
     findings = []
     reconciled_rule_ids = set()
 
+    # Unattached EBS volumes.
     ebs_findings = list(
         scan_unattached_ebs(
             ec2,
@@ -108,6 +126,7 @@ def run_detector(
         "EBS_CURRENTLY_UNATTACHED"
     )
 
+    # Unused Elastic IP addresses.
     eip_findings = list(
         scan_unused_eips(
             ec2,
@@ -124,6 +143,30 @@ def run_detector(
 
     reconciled_rule_ids.add(
         "EIP_UNUSED"
+    )
+
+    # Sustained low-utilization EC2 instances.
+    ec2_idle_findings = list(
+        scan_idle_ec2(
+            ec2,
+            cloudwatch,
+            account_id=account_id,
+            region=region,
+            partition=partition,
+            price_provider=ec2_price_provider,
+            lookback_days=ec2_idle_lookback_days,
+            thresholds=ec2_idle_thresholds,
+        )
+    )
+
+    findings.extend(
+        ec2_idle_findings
+    )
+
+    # Register this rule for reconciliation so an instance that was
+    # previously idle can transition to RESOLVED once it becomes active.
+    reconciled_rule_ids.add(
+        "EC2_IDLE"
     )
 
     persistence_results = []
