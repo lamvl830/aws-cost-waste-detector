@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+
 from aws_cost_waste_detector.ec2_idle import (
     MEBIBYTE,
     Ec2IdleThresholds,
@@ -6,13 +7,6 @@ from aws_cost_waste_detector.ec2_idle import (
     get_ec2_utilization,
     is_idle_ec2,
     scan_idle_ec2,
-)
-from aws_cost_waste_detector.ec2_idle import (
-    MEBIBYTE,
-    Ec2IdleThresholds,
-    Ec2Utilization,
-    get_ec2_utilization,
-    is_idle_ec2,
 )
 
 
@@ -232,6 +226,7 @@ def test_idle_ec2_supports_custom_thresholds():
         utilization,
         thresholds=thresholds,
     )
+
 
 class FakeEc2Paginator:
     def __init__(self, instances):
@@ -545,8 +540,7 @@ def test_scan_idle_ec2_skips_new_instance():
 
     assert findings == []
 
-    # We should not even call CloudWatch for an instance that has not existed
-    # for the complete lookback period.
+    # Do not query CloudWatch until the complete lookback window exists.
     assert (
         cloudwatch.requests
         == []
@@ -593,6 +587,63 @@ def test_scan_idle_ec2_skips_spot_instance():
 
     assert findings == []
     assert cloudwatch.requests == []
+
+
+def test_scan_idle_ec2_skips_dedicated_host_instance():
+    now = datetime(
+        2026,
+        9,
+        29,
+        tzinfo=timezone.utc,
+    )
+
+    instance = {
+        "InstanceId": "i-dedicated-host",
+        "InstanceType": "m5.large",
+        "LaunchTime": (
+            now - timedelta(days=30)
+        ),
+        "Placement": {
+            "AvailabilityZone": (
+                "us-east-1a"
+            ),
+            "Tenancy": "host",
+        },
+    }
+
+    cloudwatch = FakeCloudWatchClient(
+        {
+            "MetricDataResults": []
+        }
+    )
+
+    price_provider = FakePriceProvider(
+        0.096
+    )
+
+    findings = list(
+        scan_idle_ec2(
+            FakeEc2Client(
+                [instance]
+            ),
+            cloudwatch,
+            account_id=(
+                "123456789012"
+            ),
+            region="us-east-1",
+            price_provider=(
+                price_provider
+            ),
+            now=now,
+        )
+    )
+
+    assert findings == []
+
+    # Dedicated Hosts are intentionally unsupported by the per-instance
+    # savings model, so neither metrics nor pricing should be queried.
+    assert cloudwatch.requests == []
+    assert price_provider.requests == []
 
 
 def test_scan_idle_ec2_keeps_finding_when_price_unavailable():

@@ -229,3 +229,46 @@ def test_get_hourly_price_rejects_unknown_tenancy():
 
     assert price is None
     assert client.requests == []
+
+
+def test_get_hourly_price_rejects_windows_byol():
+    client = FakePricingClient(
+        price_list=[]
+    )
+
+    provider = (
+        Ec2OnDemandPriceProvider(
+            client
+        )
+    )
+
+    price = provider.get_hourly_price(
+        instance_type="m5.large",
+        region="us-east-1",
+        platform_details="Windows BYOL",
+    )
+
+    assert price is None
+    assert client.requests == []
+
+
+def test_get_hourly_price_rejects_dedicated_host_tenancy():
+    client = FakePricingClient(
+        price_list=[]
+    )
+
+    provider = (
+        Ec2OnDemandPriceProvider(
+            client
+        )
+    )
+
+    price = provider.get_hourly_price(
+        instance_type="m5.large",
+        region="us-east-1",
+        platform_details="Linux/UNIX",
+        tenancy="host",
+    )
+
+    assert price is None
+    assert client.requests == []

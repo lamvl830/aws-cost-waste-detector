@@ -12,18 +12,21 @@ def _pricing_operating_system(
     by the AWS Pricing API.
 
     Initial support intentionally covers standard Linux/UNIX and Windows
-    instances only. Platforms with additional software or licensing are
-    skipped rather than risk producing an inaccurate savings estimate.
+    instances only. Platforms with additional software, licensing, or BYOL
+    requirements are skipped rather than risk producing an inaccurate
+    savings estimate.
     """
     normalized = platform_details.lower()
 
-    # These platforms can include additional licensing costs and should not
-    # be treated as ordinary Linux or Windows pricing.
+    # These platforms can include additional licensing or customer-provided
+    # license costs and should not be treated as ordinary Linux or Windows
+    # pricing.
     unsupported_platforms = (
         "red hat",
         "rhel",
         "suse",
         "sql server",
+        "byol",
     )
 
     if any(
@@ -47,7 +50,12 @@ def _pricing_operating_system(
 def _pricing_tenancy(
     tenancy: str,
 ) -> str | None:
-    """Convert EC2 tenancy into the AWS Pricing API tenancy value."""
+    """
+    Convert EC2 tenancy into the AWS Pricing API tenancy value.
+
+    Dedicated Hosts are intentionally unsupported because host-level billing
+    cannot be represented accurately as a per-instance savings estimate.
+    """
     if tenancy == "default":
         return "Shared"
 
@@ -55,7 +63,7 @@ def _pricing_tenancy(
         return "Dedicated"
 
     if tenancy == "host":
-        return "Host"
+        return None
 
     return None
 

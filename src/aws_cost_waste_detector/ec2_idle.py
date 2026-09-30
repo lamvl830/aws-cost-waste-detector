@@ -1,11 +1,13 @@
 """Idle EC2 utilization analysis."""
 
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
+from aws_cost_waste_detector.cloudwatch_metrics import (
+    MetricQuery,
+    get_metric_data,
+)
 from aws_cost_waste_detector.ec2 import (
     list_running_instances,
 )
@@ -16,10 +18,6 @@ from aws_cost_waste_detector.ec2_pricing import (
     Ec2OnDemandPriceProvider,
 )
 from aws_cost_waste_detector.models import Finding
-from aws_cost_waste_detector.cloudwatch_metrics import (
-    MetricQuery,
-    get_metric_data,
-)
 
 
 MEBIBYTE = 1024 * 1024
@@ -230,6 +228,7 @@ def is_idle_ec2(
         <= thresholds.network_out_bytes
     )
 
+
 def scan_idle_ec2(
     ec2_client: Any,
     cloudwatch_client: Any,
@@ -248,6 +247,10 @@ def scan_idle_ec2(
     Only On-Demand instances that have existed for the complete lookback
     window are evaluated. Spot instances are skipped because this detector
     currently estimates savings using On-Demand pricing.
+
+    Instances running on Dedicated Hosts are also skipped because the host
+    is billed independently of an individual instance. Reporting per-instance
+    savings in that case could overstate the actual savings opportunity.
 
     Missing pricing does not suppress an otherwise valid finding. In that
     case the finding is emitted with zero estimated savings rather than
@@ -283,6 +286,11 @@ def scan_idle_ec2(
             instance["instance_lifecycle"]
             != "on-demand"
         ):
+            continue
+
+        # Dedicated Hosts are billed at the host level rather than per
+        # instance. Skip them until host-aware cost analysis is supported.
+        if instance["tenancy"] == "host":
             continue
 
         launch_time = instance.get(
