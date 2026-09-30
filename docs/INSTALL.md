@@ -159,6 +159,20 @@ alert_email = "you@example.com"
 
 report_retention_days = 30
 
+lambda_timeout_seconds = 180
+
+ec2_idle_lookback_days = 7
+
+ec2_idle_average_cpu_threshold_percent = 5
+
+ec2_idle_maximum_cpu_threshold_percent = 20
+
+ec2_idle_network_in_threshold_mib = 100
+
+ec2_idle_network_out_threshold_mib = 100
+
+ec2_idle_minimum_metric_coverage = 0.80
+
 dynamodb_point_in_time_recovery_enabled = true
 
 dynamodb_deletion_protection_enabled = false
@@ -168,8 +182,8 @@ dynamodb_deletion_protection_enabled = false
 
 `aws_region` is the detector's deployment region.
 
-Lambda, DynamoDB, S3, SNS, EventBridge Scheduler, and CloudWatch
-resources are created there.
+Lambda, DynamoDB, S3, SNS, EventBridge Scheduler, and centralized
+CloudWatch resources are created there.
 
 Example:
 
@@ -194,6 +208,9 @@ scan_regions = [
 The detector infrastructure remains in `aws_region`.
 
 If `scan_regions` is omitted, only `aws_region` is scanned.
+
+For EC2 idle detection, CloudWatch metrics are read from the same region
+as the EC2 instance being evaluated.
 
 ### `environment`
 
@@ -245,6 +262,54 @@ Set it to `null` if no email subscription should be created:
 ```hcl
 alert_email = null
 ```
+
+### `lambda_timeout_seconds`
+
+Controls the maximum Lambda execution time.
+
+The default is:
+
+```hcl
+lambda_timeout_seconds = 180
+```
+
+The higher timeout gives multi-region scans and CloudWatch utilization
+queries additional headroom as the number of evaluated resources grows.
+
+### Idle EC2 Settings
+
+Idle EC2 detection evaluates running On-Demand instances over a
+configurable CloudWatch lookback window.
+
+Default settings:
+
+```hcl
+ec2_idle_lookback_days = 7
+
+ec2_idle_average_cpu_threshold_percent = 5
+
+ec2_idle_maximum_cpu_threshold_percent = 20
+
+ec2_idle_network_in_threshold_mib = 100
+
+ec2_idle_network_out_threshold_mib = 100
+
+ec2_idle_minimum_metric_coverage = 0.80
+```
+
+With the defaults, an instance can be classified as idle only when:
+
+- it is running
+- it is On-Demand rather than Spot
+- it has existed for the full 7-day lookback window
+- average CPU utilization is at or below 5%
+- maximum CPU utilization is at or below 20%
+- total inbound network traffic is at or below 100 MiB
+- total outbound network traffic is at or below 100 MiB
+- at least 80% of expected metric data is available
+
+Missing required metrics or insufficient coverage do not cause an
+instance to be classified as idle.
 
 ### Report Retention
 
@@ -308,6 +373,7 @@ Pay particular attention to:
 - IAM permissions
 - SNS subscription configuration
 - S3 and DynamoDB settings
+- Lambda timeout and environment variables
 
 Do not apply an unexpected destructive plan.
 
@@ -366,6 +432,15 @@ A fully applied deployment should report:
 No changes. Your infrastructure matches the configuration.
 ```
 
+You can also inspect the deployed Lambda configuration:
+
+```bash
+aws lambda get-function-configuration   --function-name aws-cost-waste-detector   --query "{Timeout:Timeout,MemorySize:MemorySize,Environment:Environment.Variables}"
+```
+
+The environment should contain the configured scan regions and Idle EC2
+settings.
+
 ## 11. Invoke the Detector Manually
 
 You do not need to wait for the scheduled EventBridge invocation.
@@ -407,12 +482,7 @@ REGION=$(terraform output -raw aws_region)
 Invoke:
 
 ```bash
-aws lambda invoke \
-  --function-name "$FUNCTION_NAME" \
-  --payload '{}' \
-  --cli-binary-format raw-in-base64-out \
-  --region "$REGION" \
-  lambda-response.json
+aws lambda invoke   --function-name "$FUNCTION_NAME"   --payload '{}'   --cli-binary-format raw-in-base64-out   --region "$REGION"   lambda-response.json
 ```
 
 View the response:
@@ -456,15 +526,13 @@ evaluated.
 Retrieve the log group:
 
 ```bash
-terraform output -raw cloudwatch_log_group_name
+terraform output -raw cloudwatch_log_group
 ```
 
 Or tail the default project log group directly:
 
 ```bash
-aws logs tail "/aws/lambda/aws-cost-waste-detector" \
-  --since 10m \
-  --region us-east-1
+aws logs tail "/aws/lambda/aws-cost-waste-detector"   --since 10m   --region us-east-1
 ```
 
 For multi-region runs, logs should contain entries similar to:
@@ -477,7 +545,28 @@ Scanned AWS regions: ['us-east-1', 'us-east-2']
 
 Use the actual deployment region if it differs from `us-east-1`.
 
-## 14. View the HTML Report
+## 14. Verify Idle EC2 Detection
+
+The Idle EC2 rule only evaluates running On-Demand EC2 instances that
+have existed for the full configured lookback window.
+
+To see whether a scan region contains running instances:
+
+```bash
+aws ec2 describe-instances   --region us-east-1   --filters "Name=instance-state-name,Values=running"   --query "Reservations[].Instances[].{InstanceId:InstanceId,InstanceType:InstanceType,LaunchTime:LaunchTime,Lifecycle:InstanceLifecycle}"   --output table
+```
+
+Repeat the command for other configured scan regions as needed.
+
+If no eligible running instances exist, a successful scan can still
+return zero Idle EC2 findings. In that case the CloudWatch metric path
+may not be exercised during that invocation.
+
+Do not create long-lived test instances solely to force an idle finding.
+The automated test suite covers the utilization and classification
+logic.
+
+## 15. View the HTML Report
 
 Each scan generates a private HTML report in S3.
 
@@ -646,6 +735,19 @@ failure of the overall Lambda invocation.
 
 Check CloudWatch logs to identify which region failed and which AWS API
 returned the error.
+
+### Idle EC2 Findings Are Not Appearing
+
+Check that the instance:
+
+- is running
+- is On-Demand rather than Spot
+- has existed for the full configured lookback window
+- has sufficient CloudWatch metric coverage
+- satisfies all configured CPU and network thresholds
+
+A newly launched instance is intentionally skipped until it has existed
+for the complete lookback period.
 
 ### Report URL No Longer Works
 

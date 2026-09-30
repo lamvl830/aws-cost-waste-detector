@@ -1,11 +1,8 @@
 # AWS Cost Waste Detector
 
-A self-hosted AWS FinOps tool that automatically identifies potentially
-wasteful AWS resources, estimates their cost, tracks finding history,
-prioritizes savings opportunities, and generates private HTML reports.
+A self-hosted AWS FinOps tool that automatically identifies potentially wasteful AWS resources, estimates their cost, tracks finding history, prioritizes savings opportunities, and generates private HTML reports.
 
-The detector runs entirely inside your AWS account using AWS Lambda and
-Terraform.
+The detector runs entirely inside your AWS account using AWS Lambda and Terraform.
 
 ## Current Features
 
@@ -13,6 +10,7 @@ AWS Cost Waste Detector currently detects:
 
 - Unattached Amazon EBS volumes
 - Unused Elastic IP addresses
+- Idle On-Demand EC2 instances
 
 It also provides:
 
@@ -26,6 +24,7 @@ It also provides:
 - Temporary presigned report URLs
 - EventBridge scheduled scans
 - Multi-region AWS resource scanning
+- CloudWatch utilization analysis for EC2 idle detection
 - CloudWatch logging
 - Lambda error and throttling alarms
 - Terraform-based deployment
@@ -36,16 +35,20 @@ It also provides:
 EventBridge Scheduler
         |
         v
-   AWS Lambda
+    AWS Lambda
         |
         +----> Scan EBS volumes
         |
         +----> Scan Elastic IPs
         |
+        +----> Discover running EC2 instances
+        |          |
+        |          +----> Read CloudWatch utilization metrics
+        |
         +----> AWS Pricing API
         |
         v
-   Build Findings
+    Build Findings
         |
         +----> DynamoDB lifecycle history
         |
@@ -57,7 +60,7 @@ EventBridge Scheduler
  Generate HTML Report
         |
         v
-   Private S3 Bucket
+    Private S3 Bucket
         |
         v
  Temporary Presigned URL
@@ -65,8 +68,7 @@ EventBridge Scheduler
 
 ## Why This Project?
 
-AWS provides powerful cost-management tools, but teams can still miss
-resource-level waste between billing reviews.
+AWS provides powerful cost-management tools, but teams can still miss resource-level waste between billing reviews.
 
 AWS Cost Waste Detector complements those services by:
 
@@ -75,19 +77,35 @@ AWS Cost Waste Detector complements those services by:
 - Waiting for waste conditions to persist before prioritizing them
 - Ranking findings by estimated savings, severity, and age
 - Sending alerts when high-priority waste is detected
-- Generating private, account-local reports without sending AWS credentials
-  or resource data to an external service
+- Generating private, account-local reports without sending AWS credentials or resource data to an external service
 
 Current examples include:
 
 - EBS volumes left unattached after EC2 instances are terminated
 - Elastic IP addresses that remain allocated but unused
+- Running On-Demand EC2 instances with sustained low CPU and network activity
 - Resources that continue generating avoidable costs over time
 
-This project is not intended to replace AWS Cost Optimization Hub,
-Trusted Advisor, Compute Optimizer, or Cost Explorer. It provides a
-focused, self-hosted workflow for turning specific resource conditions
-into persistent findings and actionable alerts.
+This project is not intended to replace AWS Cost Optimization Hub, Trusted Advisor, Compute Optimizer, or Cost Explorer. It provides a focused, self-hosted workflow for turning specific resource conditions into persistent findings and actionable alerts.
+
+## Idle EC2 Detection
+
+The detector can identify running On-Demand EC2 instances that appear consistently idle over a configurable lookback window.
+
+By default, an instance is considered idle only when all of the following conditions are met:
+
+- The instance is running
+- The instance is On-Demand rather than Spot
+- The instance has existed for the full 7-day lookback window
+- Average CPU utilization is at or below 5%
+- Maximum CPU utilization is at or below 20%
+- Total inbound network traffic is at or below 100 MiB over the lookback window
+- Total outbound network traffic is at or below 100 MiB over the lookback window
+- At least 80% of expected CloudWatch metric data is available
+
+The detector fails safe when telemetry is incomplete. Missing required metrics or insufficient metric coverage do not cause an instance to be classified as idle.
+
+The current idle rule does not use memory utilization because standard EC2 CloudWatch metrics do not include memory without an additional CloudWatch Agent. Idle EC2 findings are recommendations only; the detector does not stop or terminate instances automatically.
 
 ## Finding Lifecycle
 
@@ -107,8 +125,7 @@ RESOLVED
 
 A resolved finding that appears again begins a new observation window.
 
-The default grace period is 7 days and can be configured through
-Terraform.
+The default grace period is 7 days and can be configured through Terraform.
 
 ## Priority Scoring
 
@@ -127,30 +144,37 @@ HIGH
 CRITICAL
 ```
 
-This helps surface the savings opportunities that are most worth
-reviewing first.
+This helps surface the savings opportunities that are most worth reviewing first.
 
 ## Cost Estimation
 
-The detector retrieves live AWS pricing rather than relying only on
-hardcoded prices.
+The detector retrieves live AWS pricing rather than relying only on hardcoded prices.
 
 Current pricing support includes:
 
 ### Amazon EBS
 
-Storage pricing is retrieved using the AWS Pricing API and applied to
-the size and volume type of unattached EBS volumes.
+Storage pricing is retrieved using the AWS Pricing API and applied to the size and volume type of unattached EBS volumes.
 
 ### Elastic IP / Public IPv4
 
-The detector retrieves the current public IPv4 hourly price and
-estimates the monthly cost using approximately 730 hours per month.
+The detector retrieves the current public IPv4 hourly price and estimates the monthly cost using approximately 730 hours per month.
+
+### Amazon EC2
+
+For supported On-Demand Linux/UNIX and Windows instances, the detector retrieves the current hourly instance price from the AWS Pricing API.
+
+When an instance qualifies as idle, estimated monthly savings are based on:
+
+```text
+hourly On-Demand price × 730 hours
+```
+
+The estimate represents the approximate compute cost that could be avoided if the instance were no longer required. Attached storage, data transfer, and other related AWS charges are not included in the EC2 compute estimate.
 
 Savings values are estimates. Actual AWS billing may vary.
 
-For some EBS volume types, additional IOPS or throughput charges may not
-be included in the current estimate.
+For some EBS volume types, additional IOPS or throughput charges may not be included in the current estimate.
 
 ## HTML Reports
 
@@ -172,8 +196,7 @@ Every scan generates a self-contained HTML report containing:
 
 Reports are stored in a private S3 bucket.
 
-Public access is blocked, encryption at rest is enabled, and reports are
-automatically deleted after the configured retention period.
+Public access is blocked, encryption at rest is enabled, and reports are automatically deleted after the configured retention period.
 
 A temporary presigned URL is generated for private report access.
 
@@ -185,16 +208,13 @@ Amazon SNS is used for notifications.
 
 HIGH and CRITICAL findings can trigger immediate notifications.
 
-The detector records when a finding was successfully notified so the
-same finding is not repeatedly emailed on every scan.
+The detector records when a finding was successfully notified so the same finding is not repeatedly emailed on every scan.
 
 ### Report Notifications
 
-When a scan contains findings, the detector sends a consolidated summary
-containing estimated savings and a private report link.
+When a scan contains findings, the detector sends a consolidated summary containing estimated savings and a private report link.
 
-Empty scans still generate reports but do not send unnecessary report
-emails.
+Empty scans still generate reports but do not send unnecessary report emails.
 
 ### Detector Health Alerts
 
@@ -211,20 +231,19 @@ AWS Cost Waste Detector is self-hosted.
 
 AWS resources and finding data remain inside the customer's AWS account.
 
-The detector does **not** require customer AWS access keys to be sent to
-an external service.
+The detector does **not** require customer AWS access keys to be sent to an external service.
 
 The Lambda execution role can:
 
 - Describe supported AWS resources
+- Read EC2 utilization metrics from CloudWatch
 - Read AWS pricing
 - Read and write its own DynamoDB findings
 - Publish to its own SNS topic
 - Read and write reports in its own S3 bucket
 - Write its own CloudWatch logs
 
-The detector does **not** receive permissions to automatically delete
-EBS volumes or release Elastic IP addresses.
+The detector does **not** receive permissions to automatically delete EBS volumes, release Elastic IP addresses, or stop/terminate EC2 instances.
 
 See the full [Security Model](docs/SECURITY.md).
 
@@ -236,20 +255,17 @@ The main AWS services used are:
 Amazon EventBridge Scheduler
 AWS Lambda
 Amazon EC2 APIs
+Amazon CloudWatch
 AWS Pricing API
 Amazon DynamoDB
 Amazon S3
 Amazon SNS
-Amazon CloudWatch
 AWS IAM
 ```
 
-The detector infrastructure is deployed in one AWS region, while
-supported AWS resources can be scanned across multiple configured
-regions.
+The detector infrastructure is deployed in one AWS region, while supported AWS resources can be scanned across multiple configured regions.
 
-For a deeper explanation, see the
-[Architecture documentation](docs/ARCHITECTURE.md).
+For a deeper explanation, see the [Architecture documentation](docs/ARCHITECTURE.md).
 
 ## Installation
 
@@ -262,8 +278,7 @@ You need:
 - Git
 - AWS credentials with permission to deploy the Terraform resources
 
-Python is only required if you want to run the test suite or develop the
-project locally.
+Python is only required if you want to run the test suite or develop the project locally.
 
 ### 1. Clone the repository
 
@@ -280,11 +295,9 @@ Before deploying, confirm which AWS account your credentials point to:
 aws sts get-caller-identity
 ```
 
-The returned account should be the AWS account where you want the
-detector installed.
+The returned account should be the AWS account where you want the detector installed.
 
-If you use a named AWS CLI profile, configure that profile through your
-normal AWS CLI credential workflow before running Terraform.
+If you use a named AWS CLI profile, configure that profile through your normal AWS CLI credential workflow before running Terraform.
 
 ### 3. Create your deployment configuration
 
@@ -323,26 +336,26 @@ scan_regions = [
 ]
 
 environment = "prod"
-
 project_name = "aws-cost-waste-detector"
-
 findings_table_name = "WasteFindings"
-
 scan_schedule = "rate(1 day)"
-
 finding_grace_period_days = 7
-
 alert_email = "you@example.com"
-
 report_retention_days = 30
+lambda_timeout_seconds = 180
+
+ec2_idle_lookback_days = 7
+ec2_idle_average_cpu_threshold_percent = 5
+ec2_idle_maximum_cpu_threshold_percent = 20
+ec2_idle_network_in_threshold_mib = 100
+ec2_idle_network_out_threshold_mib = 100
+ec2_idle_minimum_metric_coverage = 0.80
 
 dynamodb_point_in_time_recovery_enabled = true
-
 dynamodb_deletion_protection_enabled = false
 ```
 
-`terraform.tfvars` is intentionally ignored by Git so deployment-specific
-values such as email addresses are not committed to the repository.
+`terraform.tfvars` is intentionally ignored by Git so deployment-specific values such as email addresses are not committed to the repository.
 
 ### 4. Initialize Terraform
 
@@ -387,27 +400,23 @@ terraform output
 
 ### 7. Confirm the SNS subscription
 
-If `alert_email` is configured, Amazon SNS sends a subscription
-confirmation email.
+If `alert_email` is configured, Amazon SNS sends a subscription confirmation email.
 
 Open that email and confirm the subscription.
 
 Notifications are not delivered until the subscription is confirmed.
 
-For a more detailed walkthrough, see the
-[Installation Guide](docs/INSTALL.md).
+For a more detailed walkthrough, see the [Installation Guide](docs/INSTALL.md).
 
 ## Quick Start
 
-After deployment, the detector runs automatically according to
-`scan_schedule`.
+After deployment, the detector runs automatically according to `scan_schedule`.
 
 You can also run it manually at any time.
 
 ### PowerShell
 
-From the `infrastructure` directory, retrieve the deployed Lambda name
-and AWS deployment region:
+From the `infrastructure` directory, retrieve the deployed Lambda name and AWS deployment region:
 
 ```powershell
 $FUNCTION_NAME = terraform output -raw lambda_function_name
@@ -493,23 +502,20 @@ A successful multi-region invocation returns information similar to:
 }
 ```
 
-The top-level `region` identifies the detector's deployment region.
-`scan_regions` identifies the AWS regions whose supported resources were
-scanned.
+The top-level `region` identifies the detector's deployment region. `scan_regions` identifies the AWS regions whose supported resources were scanned.
 
 The detector will:
 
 1. Scan supported AWS resources in each configured scan region.
-2. Estimate potential savings.
-3. Store or update findings in DynamoDB.
-4. Reconcile findings that disappeared since the previous scan.
-5. Rank current findings.
-6. Send eligible notifications.
-7. Generate one private consolidated HTML report in S3.
+2. Read CloudWatch utilization metrics for eligible EC2 instances.
+3. Estimate potential savings.
+4. Store or update findings in DynamoDB.
+5. Reconcile findings that disappeared since the previous scan.
+6. Rank current findings.
+7. Send eligible notifications.
+8. Generate one private consolidated HTML report in S3.
 
-After deployment, no long-running local process is required. The detector
-runs inside your AWS account through AWS Lambda and EventBridge
-Scheduler.
+After deployment, no long-running local process is required. The detector runs inside your AWS account through AWS Lambda and EventBridge Scheduler.
 
 ## Viewing Reports
 
@@ -523,8 +529,7 @@ Multi-region reports are stored under a consolidated path similar to:
 reports/<account-id>/multi-region/
 ```
 
-When findings exist, the SNS summary notification includes a temporary
-presigned URL to the report.
+When findings exist, the SNS summary notification includes a temporary presigned URL to the report.
 
 You can find the report bucket with:
 
@@ -534,15 +539,13 @@ terraform output -raw report_bucket_name
 
 Reports are private and are not publicly accessible.
 
-By default, generated reports are retained for 30 days. This can be
-changed using:
+By default, generated reports are retained for 30 days. This can be changed using:
 
 ```hcl
 report_retention_days = 30
 ```
 
-Presigned report links are temporary. Treat them as temporary credentials
-and do not publish or commit them.
+Presigned report links are temporary. Treat them as temporary credentials and do not publish or commit them.
 
 ## Configuration
 
@@ -550,28 +553,28 @@ Common configuration options include:
 
 ```hcl
 aws_region = "us-east-1"
-
 scan_regions = [
   "us-east-1",
   "us-east-2",
 ]
 
 environment = "prod"
-
 project_name = "aws-cost-waste-detector"
-
 findings_table_name = "WasteFindings"
-
 scan_schedule = "rate(1 day)"
-
 finding_grace_period_days = 7
-
 alert_email = "you@example.com"
-
 report_retention_days = 30
+lambda_timeout_seconds = 180
+
+ec2_idle_lookback_days = 7
+ec2_idle_average_cpu_threshold_percent = 5
+ec2_idle_maximum_cpu_threshold_percent = 20
+ec2_idle_network_in_threshold_mib = 100
+ec2_idle_network_out_threshold_mib = 100
+ec2_idle_minimum_metric_coverage = 0.80
 
 dynamodb_point_in_time_recovery_enabled = true
-
 dynamodb_deletion_protection_enabled = false
 ```
 
@@ -597,17 +600,14 @@ The schedule can be changed through `terraform.tfvars`.
 
 ## Multi-Region Scanning
 
-The detector infrastructure is deployed into a single home region using
-`aws_region`.
+The detector infrastructure is deployed into a single home region using `aws_region`.
 
-Resources can be scanned across multiple AWS regions using
-`scan_regions`.
+Resources can be scanned across multiple AWS regions using `scan_regions`.
 
 Example:
 
 ```hcl
 aws_region = "us-east-1"
-
 scan_regions = [
   "us-east-1",
   "us-east-2",
@@ -618,15 +618,15 @@ scan_regions = [
 In this configuration:
 
 - Lambda, DynamoDB, S3, SNS, and EventBridge remain in `us-east-1`
-- EBS volumes and Elastic IP addresses are scanned in all three regions
+- EBS volumes, Elastic IP addresses, and eligible EC2 instances are scanned in all three regions
+- CloudWatch utilization metrics are read from the region where each EC2 instance runs
 - Finding lifecycle data is stored centrally in DynamoDB
 - Findings from all regions are combined into one HTML report
 - HIGH and CRITICAL finding notifications identify the originating region
 
 If `scan_regions` is omitted, the detector scans only `aws_region`.
 
-This preserves the original single-region behavior for deployments that
-do not configure additional scan regions.
+This preserves the original single-region behavior for deployments that do not configure additional scan regions.
 
 ## DynamoDB Finding History
 
@@ -637,14 +637,11 @@ PK = RESOURCE#{resource_arn}
 SK = RULE#{rule_id}
 ```
 
-This allows one AWS resource to have multiple independent cost-waste
-findings while preserving lifecycle history across scans.
+This allows one AWS resource to have multiple independent cost-waste findings while preserving lifecycle history across scans.
 
-Findings from every configured scan region are stored centrally in the
-DynamoDB table located in the detector's deployment region.
+Findings from every configured scan region are stored centrally in the DynamoDB table located in the detector's deployment region.
 
-Finding records include region information so lifecycle reconciliation
-remains scoped to the region where the resource was evaluated.
+Finding records include region information so lifecycle reconciliation remains scoped to the region where the resource was evaluated.
 
 Point-in-time recovery is enabled by default.
 
@@ -652,8 +649,7 @@ Point-in-time recovery is enabled by default.
 
 For local development, Python 3.11 or newer is required.
 
-Create and activate a virtual environment, then install the project with
-development dependencies.
+Create and activate a virtual environment, then install the project with development dependencies.
 
 PowerShell:
 
@@ -675,8 +671,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-The project also runs its test suite automatically using GitHub Actions
-for pull requests and changes to `main`.
+The project also runs its test suite automatically using GitHub Actions for pull requests and changes to `main`.
 
 ## Project Structure
 
@@ -701,11 +696,10 @@ Multiple AWS regions per deployment
 Waste detectors:
 - Unattached EBS volumes
 - Unused Elastic IP addresses
+- Idle On-Demand EC2 instances
 ```
 
-The detector's infrastructure remains centralized in one deployment
-region while supported AWS resources can be evaluated across all
-configured scan regions.
+The detector's infrastructure remains centralized in one deployment region while supported AWS resources can be evaluated across all configured scan regions.
 
 ## Roadmap
 
@@ -713,8 +707,8 @@ Potential future additions include:
 
 - AWS Organizations / multi-account support
 - Additional waste detectors
+- Oversized EC2 instance detection
 - RDS optimization
-- EC2 idle-resource detection
 - Snapshot cleanup opportunities
 - NAT Gateway analysis
 - Load balancer analysis
@@ -758,8 +752,7 @@ Additional documentation:
 
 ## Disclaimer
 
-AWS Cost Waste Detector provides cost optimization recommendations and
-estimated savings.
+AWS Cost Waste Detector provides cost optimization recommendations and estimated savings.
 
 Actual AWS billing may differ from the estimates shown by the detector.
 

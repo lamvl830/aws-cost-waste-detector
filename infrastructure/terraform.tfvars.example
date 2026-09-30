@@ -1,5 +1,12 @@
-# AWS region where the detector will run.
+# AWS region where detector infrastructure is deployed.
 aws_region = "us-east-1"
+
+# AWS regions whose supported resources should be scanned.
+#
+# If omitted, the detector scans only aws_region.
+scan_regions = [
+  "us-east-1",
+]
 
 # Environment tag applied to deployed resources.
 environment = "prod"
@@ -23,6 +30,38 @@ finding_grace_period_days = 7
 # SNS will send a confirmation email after deployment.
 alert_email = "you@example.com"
 
+# Maximum Lambda execution time in seconds.
+#
+# Higher values provide additional headroom for multi-region scans and
+# utilization-based detectors such as Idle EC2.
+lambda_timeout_seconds = 180
+
+# Idle EC2 detection settings.
+#
+# Only running On-Demand instances that have existed for the complete
+# lookback window are evaluated.
+
+# Number of days of CloudWatch metrics used for idle evaluation.
+ec2_idle_lookback_days = 7
+
+# Maximum average CPU utilization percentage for an instance to be
+# considered idle.
+ec2_idle_average_cpu_threshold_percent = 5
+
+# Maximum observed CPU utilization percentage for an instance to be
+# considered idle.
+ec2_idle_maximum_cpu_threshold_percent = 20
+
+# Maximum inbound network traffic over the lookback window.
+ec2_idle_network_in_threshold_mib = 100
+
+# Maximum outbound network traffic over the lookback window.
+ec2_idle_network_out_threshold_mib = 100
+
+# Minimum fraction of expected CloudWatch datapoints required before
+# an instance can be classified as idle.
+ec2_idle_minimum_metric_coverage = 0.80
+
 # Existing/default resource names.
 #
 # These can be changed when deploying into an account that already
@@ -44,10 +83,3 @@ dynamodb_point_in_time_recovery_enabled = true
 # Leave false by default so `terraform destroy` can cleanly uninstall
 # the detector. Customers can enable this for stronger protection.
 dynamodb_deletion_protection_enabled = false
-
-# AWS regions whose resources should be scanned.
-#
-# If omitted, the detector scans only aws_region.
-scan_regions = [
-  "us-east-1",
-]

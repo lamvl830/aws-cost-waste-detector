@@ -5,6 +5,10 @@ from typing import Any
 import boto3
 
 from aws_cost_waste_detector.detector import run_detector
+from aws_cost_waste_detector.ec2_idle import (
+    MEBIBYTE,
+    Ec2IdleThresholds,
+)
 from aws_cost_waste_detector.html_report import render_html_report
 from aws_cost_waste_detector.notifier import SnsNotifier
 from aws_cost_waste_detector.report_publisher import S3ReportPublisher
@@ -47,6 +51,155 @@ def _parse_scan_regions(
     return regions
 
 
+def _parse_integer_setting(
+    name: str,
+    *,
+    default: int,
+    minimum: int | None = None,
+) -> int:
+    """
+    Parse and validate an integer Lambda environment setting.
+    """
+    raw_value = os.environ.get(
+        name,
+        str(default),
+    )
+
+    try:
+        value = int(raw_value)
+    except ValueError as error:
+        raise RuntimeError(
+            f"{name} must be an integer"
+        ) from error
+
+    if minimum is not None and value < minimum:
+        raise RuntimeError(
+            f"{name} must be at least {minimum}"
+        )
+
+    return value
+
+
+def _parse_float_setting(
+    name: str,
+    *,
+    default: float,
+    minimum: float | None = None,
+    maximum: float | None = None,
+    minimum_inclusive: bool = True,
+) -> float:
+    """
+    Parse and validate a numeric Lambda environment setting.
+
+    Runtime validation protects against invalid values even if someone
+    modifies the Lambda configuration outside Terraform.
+    """
+    raw_value = os.environ.get(
+        name,
+        str(default),
+    )
+
+    try:
+        value = float(raw_value)
+    except ValueError as error:
+        raise RuntimeError(
+            f"{name} must be a number"
+        ) from error
+
+    if minimum is not None:
+        if minimum_inclusive:
+            invalid_minimum = value < minimum
+        else:
+            invalid_minimum = value <= minimum
+
+        if invalid_minimum:
+            comparison = (
+                "at least"
+                if minimum_inclusive
+                else "greater than"
+            )
+
+            raise RuntimeError(
+                f"{name} must be {comparison} {minimum}"
+            )
+
+    if maximum is not None and value > maximum:
+        raise RuntimeError(
+            f"{name} must be no greater than {maximum}"
+        )
+
+    return value
+
+
+def _load_ec2_idle_configuration(
+) -> tuple[int, Ec2IdleThresholds]:
+    """
+    Load Idle EC2 configuration from Lambda environment variables.
+    """
+    lookback_days = _parse_integer_setting(
+        "EC2_IDLE_LOOKBACK_DAYS",
+        default=7,
+        minimum=1,
+    )
+
+    average_cpu_percent = _parse_float_setting(
+        "EC2_IDLE_AVERAGE_CPU_THRESHOLD_PERCENT",
+        default=5.0,
+        minimum=0.0,
+        maximum=100.0,
+    )
+
+    maximum_cpu_percent = _parse_float_setting(
+        "EC2_IDLE_MAXIMUM_CPU_THRESHOLD_PERCENT",
+        default=20.0,
+        minimum=0.0,
+        maximum=100.0,
+    )
+
+    network_in_mib = _parse_float_setting(
+        "EC2_IDLE_NETWORK_IN_THRESHOLD_MIB",
+        default=100.0,
+        minimum=0.0,
+    )
+
+    network_out_mib = _parse_float_setting(
+        "EC2_IDLE_NETWORK_OUT_THRESHOLD_MIB",
+        default=100.0,
+        minimum=0.0,
+    )
+
+    minimum_metric_coverage = _parse_float_setting(
+        "EC2_IDLE_MINIMUM_METRIC_COVERAGE",
+        default=0.80,
+        minimum=0.0,
+        maximum=1.0,
+        minimum_inclusive=False,
+    )
+
+    if average_cpu_percent > maximum_cpu_percent:
+        raise RuntimeError(
+            "EC2_IDLE_AVERAGE_CPU_THRESHOLD_PERCENT cannot be "
+            "greater than EC2_IDLE_MAXIMUM_CPU_THRESHOLD_PERCENT"
+        )
+
+    thresholds = Ec2IdleThresholds(
+        average_cpu_percent=average_cpu_percent,
+        maximum_cpu_percent=maximum_cpu_percent,
+        network_in_bytes=(
+            network_in_mib * MEBIBYTE
+        ),
+        network_out_bytes=(
+            network_out_mib * MEBIBYTE
+        ),
+        minimum_metric_coverage=minimum_metric_coverage,
+    )
+
+    return (
+        lookback_days,
+        thresholds,
+    )
+
+
 def lambda_handler(
     event: dict[str, Any],
     context: Any,
@@ -82,24 +235,16 @@ def lambda_handler(
         "REPORT_BUCKET"
     )
 
-    grace_period_raw = os.environ.get(
+    grace_period_days = _parse_integer_setting(
         "FINDING_GRACE_PERIOD_DAYS",
-        "7",
+        default=7,
+        minimum=0,
     )
 
-    try:
-        grace_period_days = int(
-            grace_period_raw
-        )
-    except ValueError as error:
-        raise RuntimeError(
-            "FINDING_GRACE_PERIOD_DAYS must be an integer"
-        ) from error
-
-    if grace_period_days < 0:
-        raise RuntimeError(
-            "FINDING_GRACE_PERIOD_DAYS cannot be negative"
-        )
+    (
+        ec2_idle_lookback_days,
+        ec2_idle_thresholds,
+    ) = _load_ec2_idle_configuration()
 
     session = boto3.Session(
         region_name=deployment_region,
@@ -127,8 +272,8 @@ def lambda_handler(
 
     # Scan each configured region independently.
     #
-    # DynamoDB remains in the Lambda deployment region while the EC2
-    # client inside run_detector targets the individual scan region.
+    # DynamoDB remains in the Lambda deployment region while resource
+    # clients inside run_detector target the individual scan region.
     for scan_region in scan_regions:
         logger.info(
             "Scanning AWS region: %s",
@@ -142,6 +287,8 @@ def lambda_handler(
             table_name=table_name,
             notifier=notifier,
             grace_period_days=grace_period_days,
+            ec2_idle_lookback_days=ec2_idle_lookback_days,
+            ec2_idle_thresholds=ec2_idle_thresholds,
         )
 
         regional_results.append(

@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from aws_cost_waste_detector.html_report import (
+    _build_console_url,
     render_html_report,
 )
 
@@ -121,8 +122,27 @@ def test_render_html_report_escapes_content():
         },
     )
 
+    
     assert "<script>alert(1)</script>" not in html
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
 
     assert "<b>Release it</b>" not in html
     assert "&lt;b&gt;Release it&lt;/b&gt;" in html
+
+def test_build_console_url_for_idle_ec2():
+    finding = {
+        "rule_id": "EC2_IDLE",
+        "resource_id": "i-0123456789abcdef0",
+        "region": "us-east-2",
+    }
+
+    url = _build_console_url(
+        finding
+    )
+
+    assert url == (
+        "https://console.aws.amazon.com/ec2/home"
+        "?region=us-east-2"
+        "#InstanceDetails:"
+        "instanceId=i-0123456789abcdef0"
+    )

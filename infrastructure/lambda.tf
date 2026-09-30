@@ -51,7 +51,18 @@ resource "aws_iam_role_policy" "cost_waste_detector_lambda" {
 
         Action = [
           "ec2:DescribeVolumes",
-          "ec2:DescribeAddresses"
+          "ec2:DescribeAddresses",
+          "ec2:DescribeInstances"
+        ]
+
+        Resource = "*"
+      },
+      {
+        Sid    = "ReadCloudWatchMetrics"
+        Effect = "Allow"
+
+        Action = [
+          "cloudwatch:GetMetricData"
         ]
 
         Resource = "*"
@@ -146,15 +157,21 @@ resource "aws_lambda_function" "cost_waste_detector" {
     data.archive_file.cost_waste_detector.output_base64sha256
   )
 
-  timeout     = 60
+  timeout     = var.lambda_timeout_seconds
   memory_size = 256
 
   environment {
     variables = {
-      WASTE_FINDINGS_TABLE        = aws_dynamodb_table.waste_findings.name
-      COST_WASTE_ALERTS_TOPIC_ARN = aws_sns_topic.cost_waste_alerts.arn
-      FINDING_GRACE_PERIOD_DAYS   = tostring(var.finding_grace_period_days)
-      REPORT_BUCKET               = aws_s3_bucket.reports.bucket
+      WASTE_FINDINGS_TABLE                   = aws_dynamodb_table.waste_findings.name
+      COST_WASTE_ALERTS_TOPIC_ARN            = aws_sns_topic.cost_waste_alerts.arn
+      FINDING_GRACE_PERIOD_DAYS              = tostring(var.finding_grace_period_days)
+      REPORT_BUCKET                          = aws_s3_bucket.reports.bucket
+      EC2_IDLE_LOOKBACK_DAYS                 = tostring(var.ec2_idle_lookback_days)
+      EC2_IDLE_AVERAGE_CPU_THRESHOLD_PERCENT = tostring(var.ec2_idle_average_cpu_threshold_percent)
+      EC2_IDLE_MAXIMUM_CPU_THRESHOLD_PERCENT = tostring(var.ec2_idle_maximum_cpu_threshold_percent)
+      EC2_IDLE_NETWORK_IN_THRESHOLD_MIB      = tostring(var.ec2_idle_network_in_threshold_mib)
+      EC2_IDLE_NETWORK_OUT_THRESHOLD_MIB     = tostring(var.ec2_idle_network_out_threshold_mib)
+      EC2_IDLE_MINIMUM_METRIC_COVERAGE       = tostring(var.ec2_idle_minimum_metric_coverage)
 
       # Pass the configured scan regions to Lambda as a comma-separated list.
       SCAN_REGIONS = join(",", local.effective_scan_regions)

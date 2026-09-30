@@ -54,7 +54,13 @@ def _build_console_url(
             f"#Addresses:search={encoded_resource_id}"
         )
 
-    return None
+    if rule_id == "EC2_IDLE":
+        return (
+            f"{base_url}"
+            "#InstanceDetails:"
+            f"instanceId={encoded_resource_id}"
+        )
+
 
 
 def _render_finding_row(
@@ -365,7 +371,7 @@ def render_html_report(
             </div>
 
             <div>
-                Region:
+                Region(s):
                 <strong>{safe_region}</strong>
             </div>
 
